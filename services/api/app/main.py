@@ -16,6 +16,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.category_model import suggest_category
 from app.priority import calculate_priority
 
 USGS_FEED_URL = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
@@ -125,6 +126,11 @@ class AssignmentInput(BaseModel):
 class PriorityOverrideInput(BaseModel):
     score: int = Field(ge=0, le=100)
     reason: str = Field(min_length=5, max_length=500)
+
+
+class CategorySuggestionInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    text: str = Field(min_length=5, max_length=500)
 
 
 class EarthquakeCache:
@@ -416,6 +422,10 @@ def create_app(
             {"id": "generic", "name": "Custom area", "data_class": "interactive_context"},
             {"id": "nepal-historical-demo", "name": "Nepal historical flood demonstration", "data_class": "historical_reference"},
         ]}
+
+    @app.post("/api/ml/category-suggestion")
+    def category_suggestion(payload: CategorySuggestionInput) -> dict[str, str | float | None]:
+        return suggest_category(payload.text)
 
     @app.get("/api/incidents")
     def list_incidents(

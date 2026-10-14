@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { arkgridApi, ApiError, apiBaseUrl } from '../api/client'
 import {
@@ -34,6 +34,10 @@ function formatTime(value: string | null): string {
 
 function currentTimestamp(): string {
   return new Date().toISOString()
+}
+
+function isEmergencyCategory(value: string | null): value is EmergencyCategory {
+  return emergencyCategories.some(category => category === value)
 }
 
 function describeStatus(report: EmergencyReport): string {
@@ -90,6 +94,10 @@ export function EmergencyMode({
   const [storageLoaded, setStorageLoaded] = useState(false)
   const [locationMessage, setLocationMessage] = useState('')
   const [locationClock, setLocationClock] = useState(0)
+  const [categorySuggestion, setCategorySuggestion] = useState<{ category: string | null; score: number } | null>(null)
+  const [categorySuggestionError, setCategorySuggestionError] = useState('')
+  const [isSuggestingCategory, setIsSuggestingCategory] = useState(false)
+  const categoryRequestId = useRef(0)
 
   const selectedReport = reports.find(report => report.id === selectedId) ?? null
   const canSync = true
@@ -146,6 +154,38 @@ export function EmergencyMode({
   function updateDraft<K extends keyof EmergencyDraft>(key: K, value: EmergencyDraft[K]) {
     setDraft(current => ({ ...current, [key]: value }))
     setValidationErrors([])
+    if (key === 'message') {
+      categoryRequestId.current += 1
+      setCategorySuggestion(null)
+      setCategorySuggestionError('')
+      setIsSuggestingCategory(false)
+    }
+  }
+
+  async function requestCategorySuggestion() {
+    const text = draft.message.trim()
+    if (text.length < 5) {
+      setCategorySuggestionError('Enter at least 5 characters of report text to get a category suggestion.')
+      return
+    }
+    const requestId = ++categoryRequestId.current
+    setCategorySuggestion(null)
+    setCategorySuggestionError('')
+    setIsSuggestingCategory(true)
+    try {
+      const result = await arkgridApi.suggestCategory(text)
+      if (requestId === categoryRequestId.current) {
+        setCategorySuggestion({ category: result.category, score: result.score })
+      }
+    } catch (error) {
+      if (requestId === categoryRequestId.current) {
+        setCategorySuggestionError(error instanceof Error
+          ? `Category suggestion is unavailable: ${error.message}`
+          : 'Category suggestion is unavailable. Your report can still be completed manually.')
+      }
+    } finally {
+      if (requestId === categoryRequestId.current) setIsSuggestingCategory(false)
+    }
   }
 
   function updateManualCoordinate(axis: 'latitude' | 'longitude', rawValue: string) {
@@ -534,6 +574,32 @@ export function EmergencyMode({
               <textarea className={inputClass} rows={3} maxLength={500} value={draft.message} onChange={event => updateDraft('message', event.target.value)} placeholder="What help is needed?" />
               <span className="font-normal text-slate-500">{draft.message.length}/500 characters</span>
             </label>
+            <div className="grid gap-2">
+              <button type="button" className="min-h-11 w-fit rounded-lg border border-blue-700 px-4 py-2 text-sm font-semibold text-blue-900 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => void requestCategorySuggestion()} disabled={isSuggestingCategory || draft.message.trim().length < 5}>
+                {isSuggestingCategory ? 'Suggesting…' : 'Suggest category from message'}
+              </button>
+              <p className="text-xs text-slate-600">Demo ML suggestion only; it does not verify the report or determine priority. Review and choose the category yourself.</p>
+              {categorySuggestion && (
+                <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
+                  {categorySuggestion.category
+                    ? <>
+                      <span>Suggested: <strong>{categorySuggestion.category}</strong> · model score {Math.round(categorySuggestion.score * 100)}% (not calibrated)</span>
+                      <button type="button" className="min-h-9 rounded-md bg-blue-900 px-3 py-1.5 font-semibold text-white disabled:opacity-60"
+                        disabled={draft.category === categorySuggestion.category}
+                        onClick={() => {
+                          if (isEmergencyCategory(categorySuggestion.category)) {
+                            updateDraft('category', categorySuggestion.category)
+                          }
+                        }}>
+                        {draft.category === categorySuggestion.category ? 'Already selected' : 'Use suggestion'}
+                      </button>
+                    </>
+                    : <span>No close category match from the demo examples. Select a category manually.</span>}
+                </div>
+              )}
+              {categorySuggestionError && <p role="alert" className="text-sm text-red-800">{categorySuggestionError}</p>}
+            </div>
             <label className={labelClass}>
               People affected
               <input className={inputClass} type="number" min="1" max="99999" step="1" required value={draft.peopleAffected}

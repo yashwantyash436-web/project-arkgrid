@@ -1,4 +1,4 @@
-import type { EmergencyReport } from '../emergency/types'
+import type { EmergencyCategory, EmergencyReport } from '../emergency/types'
 import type {
   EarthquakeResponse,
   Incident,
@@ -135,6 +135,13 @@ export const arkgridApi = {
 
   scenarios() {
     return request<{ items: { id: string; name: string; data_class: string }[] }>('/api/scenarios')
+  },
+
+  suggestCategory(text: string) {
+    return request<{ category: EmergencyCategory | null; score: number; model: string }>('/api/ml/category-suggestion', {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    })
   },
 
   async syncEmergencyReport(report: EmergencyReport) {

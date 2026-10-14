@@ -74,4 +74,22 @@ describe('ArkGrid API client', () => {
     })
     expect(new Headers(init?.headers).get('Idempotency-Key')).toBe(report.id)
   })
+
+  it('requests an optional category suggestion from report text', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({
+      category: 'Rescue',
+      score: 0.84,
+      model: 'demo_multinomial_naive_bayes',
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetcher)
+
+    await expect(arkgridApi.suggestCategory('We are trapped and need rescue')).resolves.toMatchObject({
+      category: 'Rescue',
+      model: 'demo_multinomial_naive_bayes',
+    })
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/api/ml/category-suggestion')
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({
+      text: 'We are trapped and need rescue',
+    })
+  })
 })

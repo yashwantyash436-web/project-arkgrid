@@ -9,6 +9,7 @@ const { state } = vi.hoisted(() => ({
     reports: [] as EmergencyReport[],
     settings: { id: 'settings', trustedContacts: [], lastSyncAt: null, recentLocation: null } as EmergencySettings,
     sync: vi.fn(async () => ({ serverId: 'incident-server-1', synchronizedAt: '2026-10-14T00:00:00Z' })),
+    suggestCategory: vi.fn(async () => ({ category: 'Rescue' as const, score: 0.84, model: 'demo_multinomial_naive_bayes' })),
   },
 }))
 
@@ -17,6 +18,7 @@ vi.mock('../api/client', () => ({
   ApiError: class ApiError extends Error {},
   arkgridApi: {
     syncEmergencyReport: state.sync,
+    suggestCategory: state.suggestCategory,
   },
 }))
 
@@ -50,6 +52,7 @@ beforeEach(() => {
   state.reports = []
   state.settings = { id: 'settings', trustedContacts: [], lastSyncAt: null, recentLocation: null }
   state.sync.mockClear()
+  state.suggestCategory.mockClear()
   vi.stubGlobal('confirm', vi.fn(() => true))
 })
 
@@ -58,6 +61,23 @@ function openEmergencyMode(offlineReady = true) {
 }
 
 describe('offline emergency mode', () => {
+  it('offers a demo ML category suggestion for review before applying it', async () => {
+    openEmergencyMode()
+    await screen.findByRole('button', { name: /Trusted contacts/ })
+    fireEvent.change(screen.getByLabelText(/Short message/), {
+      target: { value: 'We are trapped under rubble and need rescue' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest category from message' }))
+
+    expect(await screen.findByRole('button', { name: 'Use suggestion' })).toBeInTheDocument()
+    expect(state.suggestCategory).toHaveBeenCalledWith('We are trapped under rubble and need rescue')
+    const category = screen.getByLabelText('Emergency category') as HTMLSelectElement
+    expect(category.value).toBe('Medical assistance')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use suggestion' }))
+    expect(category.value).toBe('Rescue')
+  })
+
   it('saves a report locally before showing the review and SMS action', async () => {
     openEmergencyMode(false)
     await screen.findByText(/Offline reload is not ready yet/)

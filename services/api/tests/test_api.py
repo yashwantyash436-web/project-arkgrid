@@ -100,6 +100,39 @@ def test_health_scenarios_sources_and_earthquake_normalization(tmp_path):
         )
 
 
+def test_demo_ml_category_suggestion_and_validation(tmp_path):
+    with create_test_client(tmp_path) as client:
+        response = client.post(
+            "/api/ml/category-suggestion",
+            json={"text": "We are trapped under rubble and need rescue"},
+        )
+        assert response.status_code == 200
+        assert response.json()["category"] == "Rescue"
+        assert 0 < response.json()["score"] <= 1
+        assert response.json()["model"] == "demo_multinomial_naive_bayes"
+
+        examples = (
+            ("injured person needs a doctor", "Medical assistance"),
+            ("flood water is rising and we need to evacuate", "Evacuation"),
+            ("we need a safe place to stay tonight", "Shelter"),
+            ("families are hungry and need food and drinking water", "Food or water"),
+            ("power lines are down and electricity is out", "Other"),
+        )
+        for text, expected_category in examples:
+            suggestion = client.post("/api/ml/category-suggestion", json={"text": text}).json()
+            assert suggestion["category"] == expected_category
+
+        unknown = client.post(
+            "/api/ml/category-suggestion",
+            json={"text": "zzzxxyy qqqww"},
+        )
+        assert unknown.status_code == 200
+        assert unknown.json()["category"] is None
+        assert unknown.json()["score"] == 0
+
+        assert client.post("/api/ml/category-suggestion", json={"text": "help"}).status_code == 422
+
+
 def test_incident_validation_idempotency_and_persistence(tmp_path):
     database = tmp_path / "test.sqlite3"
     client = create_test_client(tmp_path)
