@@ -8,7 +8,7 @@ The inspected workspace contains no application source, configuration, dependenc
 
 ArkGrid is a location-independent disaster-intelligence and rescue-support web application. A user selects a place or map area, explores trustworthy external hazard information and imagery, submits or reviews SOS reports, and uses a command view to triage reported incidents and simulated rescue resources.
 
-It combines monitoring, analysis, citizen protection, and response coordination. It is **not** a universal disaster-prediction system, a continuously updated flood-water map, or a replacement for emergency authorities.
+It combines monitoring, analysis, citizen protection, and response coordination. It is **not** a universal disaster-prediction system, a continuously updated flood-water map, or a replacement for emergency aut.horities.
 
 ## Users and primary journeys
 

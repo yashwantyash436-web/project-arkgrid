@@ -64,6 +64,24 @@ pnpm --dir apps\web run dev
 
 Vite proxies `/api` to `http://127.0.0.1:8000` during local development. For a separately hosted API, copy `apps/web/.env.example` to `apps/web/.env.local` and set `VITE_ARKGRID_API_URL` to its public base URL. Only the API URL belongs in frontend configuration; provider/coordinator credentials must remain server-side. When the API is unavailable, live observations and persisted-coordinator views show an error, while locally saved Emergency Mode reports remain on-device and unsynchronized.
 
+## Deploy on Render
+
+This repository includes a Render Blueprint at [`render.yaml`](./render.yaml). It provisions:
+
+- an API service running FastAPI and SQLite on a persistent Render disk,
+- a frontend static site built from the Vite app,
+- the required environment configuration for the web app to reach the API.
+
+To deploy it:
+
+1. Sign in to Render and create a new Blueprint import.
+2. Connect this repository.
+3. Review the generated services and confirm the API hostname matches the frontend environment variable.
+4. Set a secure `ARKGRID_COORDINATOR_TOKEN` in the Render dashboard if you want override support enabled.
+5. Deploy the blueprint.
+
+The frontend service expects the backend to be available at `https://arkgrid-api.onrender.com` unless you rename the service or change the `VITE_ARKGRID_API_URL` value in the Render dashboard.
+
 ## Offline and PWA testing
 
 The Vite development server intentionally does not register the service worker. For offline-shell testing, build and serve the production bundle locally:
