@@ -7,7 +7,16 @@ import type { EmergencyReport, EmergencySettings } from './types'
 const { state } = vi.hoisted(() => ({
   state: {
     reports: [] as EmergencyReport[],
-    settings: { id: 'settings', trustedContacts: [], lastSyncAt: null } as EmergencySettings,
+    settings: { id: 'settings', trustedContacts: [], lastSyncAt: null, recentLocation: null } as EmergencySettings,
+    sync: vi.fn(async () => ({ serverId: 'incident-server-1', synchronizedAt: '2026-10-14T00:00:00Z' })),
+  },
+}))
+
+vi.mock('../api/client', () => ({
+  apiBaseUrl: '',
+  ApiError: class ApiError extends Error {},
+  arkgridApi: {
+    syncEmergencyReport: state.sync,
   },
 }))
 
@@ -27,11 +36,20 @@ vi.mock('./storage', () => ({
   },
 }))
 
-afterEach(cleanup)
+const originalGeolocationDescriptor = Object.getOwnPropertyDescriptor(navigator, 'geolocation')
+afterEach(() => {
+  cleanup()
+  if (originalGeolocationDescriptor) {
+    Object.defineProperty(navigator, 'geolocation', originalGeolocationDescriptor)
+  } else {
+    Reflect.deleteProperty(navigator, 'geolocation')
+  }
+})
 
 beforeEach(() => {
   state.reports = []
-  state.settings = { id: 'settings', trustedContacts: [], lastSyncAt: null }
+  state.settings = { id: 'settings', trustedContacts: [], lastSyncAt: null, recentLocation: null }
+  state.sync.mockClear()
   vi.stubGlobal('confirm', vi.fn(() => true))
 })
 
@@ -50,51 +68,170 @@ describe('offline emergency mode', () => {
     await screen.findByRole('heading', { name: 'Review saved report' })
     expect(state.reports).toHaveLength(1)
     expect(state.reports[0].id).toBeTruthy()
-    expect(state.reports[0].syncStatus).toBe('not_configured')
+    expect(state.reports[0].syncStatus).toBe('pending')
     expect(screen.getByText(/Nothing has been sent/)).toBeInTheDocument()
-    expect(screen.getByText(/Backend synchronization is not configured/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Trusted contacts' }))
     expect(screen.queryByRole('heading', { name: 'Review saved report' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Device queue (1)' }))
     expect(screen.getByRole('heading', { name: 'Review saved report' })).toBeInTheDocument()
+    expect(screen.getByText(/Ready to synchronize with the configured backend/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to queue' }))
+    expect(screen.getByText(/Manual sync first checks backend health/)).toBeInTheDocument()
+  })
+
+  it('captures device coordinates with the browser-reported accuracy and timestamp', async () => {
+    const capturedAt = Date.parse('2026-10-14T05:00:00.000Z')
+    const getCurrentPosition = vi.fn((success: PositionCallback) => success({
+      coords: {
+        latitude: 27.7172,
+        longitude: 85.324,
+        accuracy: 42,
+      } as GeolocationCoordinates,
+      timestamp: capturedAt,
+    } as GeolocationPosition))
+    Object.defineProperty(navigator, 'geolocation', { configurable: true, value: { getCurrentPosition } })
+    openEmergencyMode()
+    await screen.findByRole('button', { name: /Trusted contacts/ })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use this device’s location' }))
+    expect(await screen.findByText(/Browser-reported accuracy: ±42 m/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save on this device and review' }))
+
+    await screen.findByRole('heading', { name: 'Review saved report' })
+    expect(state.reports[0]).toMatchObject({
+      latitude: 27.7172,
+      longitude: 85.324,
+      locationSource: 'device',
+      locationAccuracyMeters: 42,
+      locationCapturedAt: '2026-10-14T05:00:00.000Z',
+    })
+    expect(screen.getByRole('link', { name: 'View reported coordinates on OpenStreetMap' }))
+      .toHaveAttribute('href', expect.stringContaining('mlat=27.7172'))
+  })
+
+  it('keeps report creation available when location permission is denied', async () => {
+    const denied = {
+      code: 1,
+      message: 'Permission denied',
+      PERMISSION_DENIED: 1,
+      POSITION_UNAVAILABLE: 2,
+      TIMEOUT: 3,
+    } as GeolocationPositionError
+    Object.defineProperty(navigator, 'geolocation', {
+      configurable: true,
+      value: { getCurrentPosition: (_success: PositionCallback, error: PositionErrorCallback) => error(denied) },
+    })
+    openEmergencyMode()
+    await screen.findByRole('button', { name: /Trusted contacts/ })
+    fireEvent.click(screen.getByRole('button', { name: 'Use this device’s location' }))
+    expect(await screen.findByText(/Location permission was not granted/)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Manual location description'), { target: { value: 'Location withheld' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save on this device and review' }))
+    await screen.findByRole('heading', { name: 'Review saved report' })
+    expect(state.reports[0]).toMatchObject({ latitude: null, longitude: null, locationSource: 'unknown' })
+  })
+
+  it('labels manually entered coordinates as unverified and validates coordinate bounds', async () => {
+    openEmergencyMode()
+    await screen.findByRole('button', { name: /Trusted contacts/ })
+    fireEvent.change(screen.getByLabelText('Latitude'), { target: { value: '27.7' } })
+    fireEvent.change(screen.getByLabelText('Longitude'), { target: { value: '85.3' } })
+    expect(screen.getByText('Manually entered coordinates; not device-verified.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save on this device and review' }))
+    await screen.findByRole('heading', { name: 'Review saved report' })
+    expect(state.reports[0].locationSource).toBe('manual')
+    expect(state.reports[0].locationAccuracyMeters).toBeNull()
   })
 
   it('requires valid international trusted contacts and keeps Bluetooth unsupported', async () => {
     openEmergencyMode()
     await screen.findByRole('button', { name: /Trusted contacts/ })
     fireEvent.click(screen.getByRole('button', { name: 'Trusted contacts' }))
-    fireEvent.change(screen.getByLabelText('Trusted phone numbers'), { target: { value: '4155550123' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save contacts on this device' }))
-    expect(await screen.findByText(/Use up to five contacts in international E\.164 format/)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Contact name'), { target: { value: 'Alex' } })
+    fireEvent.change(screen.getByLabelText('Relationship'), { target: { value: 'Sibling' } })
+    fireEvent.change(screen.getByLabelText('Phone number (international format)'), { target: { value: '4155550123' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add trusted contact' }))
+    expect(await screen.findByRole('status')).toHaveTextContent(/international E\.164 format/)
 
-    fireEvent.change(screen.getByLabelText('Trusted phone numbers'), { target: { value: '+14155550123' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save contacts on this device' }))
-    expect(await screen.findByText(/Trusted contacts saved only on this device/)).toBeInTheDocument()
-    expect(screen.getByText('Not yet supported.')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Phone number (international format)'), { target: { value: '+14155550123' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add trusted contact' }))
+    expect(await screen.findByText(/Contact saved only on this device/)).toBeInTheDocument()
+    expect(state.settings.trustedContacts[0]).toMatchObject({ name: 'Alex', relationship: 'Sibling', phone: '+14155550123' })
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.change(screen.getByLabelText('Contact name'), { target: { value: 'Alexandra' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save contact changes' }))
+    await waitFor(() => expect(state.settings.trustedContacts[0].name).toBe('Alexandra'))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(state.settings.trustedContacts).toHaveLength(0))
+    expect(screen.getByText(/Bluetooth SOS relay is not implemented/)).toBeInTheDocument()
   })
 
   it('opens an SMS handoff only with an explicit action and never labels it delivered', async () => {
     openEmergencyMode()
     await screen.findByRole('button', { name: /Trusted contacts/ })
     fireEvent.click(screen.getByRole('button', { name: 'Trusted contacts' }))
-    fireEvent.change(screen.getByLabelText('Trusted phone numbers'), { target: { value: '+14155550123' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save contacts on this device' }))
-    await screen.findByText(/Trusted contacts saved only on this device/)
+    fireEvent.change(screen.getByLabelText('Contact name'), { target: { value: 'Alex' } })
+    fireEvent.change(screen.getByLabelText('Relationship'), { target: { value: 'Friend' } })
+    fireEvent.change(screen.getByLabelText('Phone number (international format)'), { target: { value: '+14155550123' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add trusted contact' }))
+    await screen.findByText(/Contact saved only on this device/)
     fireEvent.click(screen.getByRole('button', { name: 'New report' }))
     fireEvent.change(screen.getByLabelText('Manual location description'), { target: { value: 'Near the clinic' } })
+    fireEvent.change(screen.getByLabelText('Latitude'), { target: { value: '27.7' } })
+    fireEvent.change(screen.getByLabelText('Longitude'), { target: { value: '85.3' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save on this device and review' }))
     await screen.findByRole('heading', { name: 'Review saved report' })
 
-    const smsLink = screen.getByRole('link', { name: /Open SMS composer for \+14155550123/ })
+    fireEvent.click(screen.getByRole('checkbox', { name: /Alex/ }))
+    const smsLink = screen.getByRole('link', { name: /Prepare SMS for Alex/ })
     expect(smsLink).toHaveAttribute('href', expect.stringContaining('sms:+14155550123'))
-    expect((screen.getByLabelText('SMS message preview') as HTMLTextAreaElement).value).toContain('ARKGRID SOS')
-    expect(screen.queryByText(/delivered/i)).not.toBeInTheDocument()
+    expect((screen.getByLabelText('SMS message preview for Alex') as HTMLTextAreaElement).value).toContain('ARKGRID SOS')
+    expect((screen.getByLabelText('SMS message preview for Alex') as HTMLTextAreaElement).value).toContain('https://www.openstreetmap.org')
+    expect(screen.getByText(/NOT YET DELIVERED/)).toBeInTheDocument()
+    expect(screen.queryByText(/SMS was delivered/i)).not.toBeInTheDocument()
 
     smsLink.addEventListener('click', event => event.preventDefault())
     fireEvent.click(smsLink)
     await screen.findByRole('button', { name: 'I attempted to send it' })
     fireEvent.click(screen.getByRole('button', { name: 'I attempted to send it' }))
     await waitFor(() => expect(state.reports[0].transmissionStatus).toBe('user_marked_attempted'))
-    expect(screen.getByText(/delivery is unconfirmed/)).toBeInTheDocument()
+    expect(screen.getByText(/delivery status is unknown/)).toBeInTheDocument()
+  })
+
+  it('stores only the latest explicitly captured location and can delete it', async () => {
+    const timestamp = Date.now()
+    Object.defineProperty(navigator, 'geolocation', {
+      configurable: true,
+      value: { getCurrentPosition: (success: PositionCallback) => success({
+        coords: { latitude: 27.7, longitude: 85.3, accuracy: 16 } as GeolocationCoordinates,
+        timestamp,
+      } as GeolocationPosition) },
+    })
+    openEmergencyMode()
+    await screen.findByRole('button', { name: /Trusted contacts/ })
+    fireEvent.click(screen.getByRole('button', { name: 'Trusted contacts' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Enable Location / refresh' }))
+    expect(await screen.findByText(/Last captured location — not live tracking/)).toBeInTheDocument()
+    expect(state.settings.recentLocation).toMatchObject({ latitude: 27.7, accuracyMeters: 16 })
+    fireEvent.click(screen.getByRole('button', { name: 'Delete recent location' }))
+    await waitFor(() => expect(state.settings.recentLocation).toBeNull())
+  })
+
+  it('marks a local report synchronized only after the API acknowledges it', async () => {
+    openEmergencyMode()
+    await screen.findByRole('button', { name: /Trusted contacts/ })
+    fireEvent.change(screen.getByLabelText('Manual location description'), { target: { value: 'Demo location' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save on this device and review' }))
+    await screen.findByRole('heading', { name: 'Review saved report' })
+    fireEvent.click(screen.getByRole('button', { name: 'Device queue (1)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Back to queue' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sync pending (1)' }))
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('shares their report details and location'))
+    await waitFor(() => expect(state.sync).toHaveBeenCalledWith(expect.objectContaining({ id: state.reports[0].id })))
+    await waitFor(() => expect(state.reports[0].syncStatus).toBe('synchronized'))
+    expect(state.reports[0].serverIncidentId).toBe('incident-server-1')
+    expect(state.reports[0].syncAttempts).toBe(1)
+    expect(screen.getByText(/Backend acknowledged persistence/)).toBeInTheDocument()
   })
 })

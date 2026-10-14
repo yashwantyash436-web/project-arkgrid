@@ -51,7 +51,7 @@ Commit small, licence-permitted provider response fixtures and synthetic SOS/res
 - Rehearse provider outage and offline paths; retain fixtures so the planned demo remains reliable even if a live source fails.
 - State the system’s limits: observations/forecasts are provider data, Nepal material is historical, SOS/resources are simulated unless explicitly approved otherwise, and ArkGrid does not replace emergency services.
 
-## Current frontend verification status (2026-10-14)
+## Frontend setup baseline (2026-10-14)
 
 The frontend is under `apps/web`; pnpm is the package manager indicated by its `pnpm-lock.yaml` and workspace file. There is no repository-root package manifest or workspace file. Verification used Node.js 20.20.2 and pnpm 10.33.0.
 
@@ -64,7 +64,7 @@ The frontend is under `apps/web`; pnpm is the package manager indicated by its `
 
 The invalid, unrelated `C:\package.json` explains the previous `Unexpected "\x8c" in JSON` failure. Vite's implicit PostCSS discovery reached outside the workspace while processing CSS; `vite.config.ts` now supplies an explicit empty PostCSS plugin list because Tailwind v4 is integrated through its existing Vite plugin. Vitest's default config bundler also traversed to that file, so its script uses the runner loader. Vitest's optional missing-package auto-install probe independently hit the same host file even though `jsdom` resolves from the app; the local test config skips that probe. The external file was not changed.
 
-The current map click captures a **single coordinate only**, not a drawn or persisted area-of-interest geometry. The legacy Citizen SOS demo only validates in the browser; the separate Emergency Mode stores reports locally but does not provide a backend service. USGS/live earthquakes, flood forecasts or extents, and satellite imagery remain unimplemented. UI component tests mock the map; the separate browser smoke check verified that the real Leaflet component mounts and exposes attribution.
+At this baseline checkpoint, the map click captured a **single coordinate only**, not a drawn or persisted area-of-interest geometry. The original Citizen SOS form only validated in the browser; the separate Emergency Mode stored reports locally but did not provide a backend service. The later integration status below supersedes those statements where applicable.
 
 ## Offline Emergency Mode verification (2026-10-14)
 
@@ -79,4 +79,24 @@ The frontend now includes a production PWA app shell, a local SOS queue, and an 
 
 The browser harness reproduced a connectivity-reporting limitation: after an offline reload, `navigator.onLine` could still be `true` while a non-cached same-origin request failed with `ERR_INTERNET_DISCONNECTED`. The UI therefore labels connectivity as a **browser hint** and explicitly says it does not verify internet access, backend reachability, or SMS delivery. This event/property is not a proof of connectivity.
 
-No FastAPI backend exists in this repository. Reports remain local unless an operator explicitly configures a compatible `VITE_ARKGRID_API_URL` endpoint and presses Sync; background sync is not implemented. The SMS action opens the device composer or copies a reviewed message; it never sends automatically and cannot confirm delivery. Bluetooth relay remains unsupported. The offline browser smoke test used only temporary synthetic data, which was removed afterward. Offline browser probes and uncached tile requests intentionally generated network-failure console entries; no API was configured or contacted successfully.
+At this offline-feature checkpoint, no FastAPI backend existed. The current integration status below supersedes that statement. Background sync remains unimplemented. The SMS action opens the device composer or copies a reviewed message; it never sends automatically and cannot confirm delivery. Bluetooth relay remains unsupported.
+
+## Backend and frontend integration status (2026-10-14)
+
+Current code adds a FastAPI/SQLite service, typed API client, Vite `/api` development proxy, backend-persisted demo SOS reports, a manual idempotent sync action for IndexedDB emergency reports, persisted incident coordination (filters, status, notes, fictional resource assignments), explainable priority details and token-gated score overrides, USGS observation filtering/map markers, and source-status cards. Citizen SOS creates simulation-class records. Emergency Mode sync requires explicit confirmation before uploading local report details/location and creates an unverified `citizen_report` with the confirmation persisted. Neither path contacts rescue services.
+
+Latest verification for this integration work:
+
+- `pnpm --dir apps\web run typecheck`: **passed**.
+- `pnpm --dir apps\web run lint`: **passed**.
+- `pnpm --dir apps\web run test`: **passed**, 16 tests across 4 files.
+- `pnpm --dir apps\web run build`: **passed**; Vite emitted the PWA service worker and production assets.
+- `.\.venv\Scripts\python.exe -m pytest services/api/tests -q`: **passed**, 8 tests. Starlette reports that `httpx` with its current TestClient is deprecated; this did not fail the suite.
+- Local browser/API smoke check: API health returned `ok`; Citizen SOS submission was persisted, shown in the coordinator, transitioned, annotated, and assigned a fictional resource. An IndexedDB emergency report synchronized only after the upload confirmation and backend acknowledgement; the persisted SQLite response identified it as `citizen_report` with `consent_confirmed=true`. The test report was removed from the browser queue. Source cards rendered current metadata/status limits. Browser console errors, uncaught page errors, and failed requests were not observed in the final browser check. UI tests mock responses, while this smoke check exercised local services.
+- Live USGS request at `2026-10-14T06:38:23.849Z` returned 253 normalized all-day observations; this feed count and availability are time-dependent. The monitoring view rendered original USGS links and magnitude filtering.
+- Source probes returned HTTP 200 for the CEMS and GloFAS information pages, but neither provides a connected hazard-data product. The CDSE public catalogue probe returned HTTP 200 and product metadata (`metadata_available=true`); it did not return imagery or an analyzed flood product.
+- `git diff --check`: **passed**. Integration changes remain uncommitted and unpushed on local `main`; the branch still points at the previously pushed offline-mode checkpoint.
+
+API tests use an injected USGS fixture and fake CEMS/GloFAS/CDSE source probes; those tests do not prove external provider availability. Live checks above describe only this run and must not be treated as an uptime guarantee.
+
+The app routes are not role-authenticated; only priority overrides have the configurable shared-token check. Treat all endpoints as local-demo only. USGS live retrieval, CDSE public catalogue metadata, CEMS/GloFAS reachability, and browser integration must be reported only after a separate runtime check. Copernicus metadata is not imagery; no GloFAS forecast or CEMS activation data is connected. The map still selects a point and does not implement polygon AOIs. General incident authorization, rate limits, privacy/retention policy, and production hardening remain release blockers.

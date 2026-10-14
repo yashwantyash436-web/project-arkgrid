@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
+import { arkgridApi, ApiError, apiBaseUrl } from '../api/client'
 import {
-  createBackendSyncProvider,
   isLikelyMultipartSms,
-  mapSyncError,
   normalizePhoneNumber,
   smsHandoffProvider,
 } from './communications'
@@ -22,10 +21,9 @@ import type {
   EmergencySettings,
   EmergencyCategory,
   IncidentType,
+  TrustedContact,
   Severity,
 } from './types'
-
-const backend = createBackendSyncProvider(import.meta.env.VITE_ARKGRID_API_URL)
 
 const inputClass = 'min-h-12 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-950'
 const labelClass = 'grid gap-1.5 text-sm font-semibold text-slate-800'
@@ -39,45 +37,51 @@ function currentTimestamp(): string {
 }
 
 function describeStatus(report: EmergencyReport): string {
-  if (report.syncStatus === 'synchronized') return `Synchronized with backend at ${formatTime(report.syncAttemptedAt)}`
-  if (report.syncStatus === 'failed') return `Sync failed at ${formatTime(report.syncAttemptedAt)}. ${report.syncError ?? ''}`
+  if (report.syncStatus === 'synchronized') return `Backend acknowledged persistence at ${formatTime(report.syncAttemptedAt)}; this does not confirm emergency-service delivery.`
+  if (report.syncStatus === 'failed') return `Saved on this device — delivery is not confirmed. Sync failed at ${formatTime(report.syncAttemptedAt)}. ${report.syncError ?? ''}`
   if (report.transmissionStatus === 'user_marked_attempted') {
-    return `You marked an SMS attempt at ${formatTime(report.transmissionAttemptedAt)}; delivery is unconfirmed.`
+    return `You marked an SMS attempt at ${formatTime(report.transmissionAttemptedAt)}; delivery status is unknown.`
   }
   if (report.transmissionStatus === 'composer_opened') {
-    return `SMS composer opened at ${formatTime(report.transmissionAttemptedAt)}; sending is unconfirmed.`
+    return `SMS handoff requested at ${formatTime(report.transmissionAttemptedAt)}; delivery status is unknown.`
   }
   if (report.transmissionStatus === 'copied_for_manual_send') {
-    return `Message copied for manual sending at ${formatTime(report.transmissionAttemptedAt)}; delivery is unconfirmed.`
+    return `Message copied at ${formatTime(report.transmissionAttemptedAt)}; delivery status is unknown.`
   }
-  if (report.syncStatus === 'pending') return 'Ready to synchronize with the configured backend.'
-  return 'Saved on this device. Backend synchronization is not configured.'
+  if (report.syncStatus === 'pending') return 'Saved on this device — NOT YET DELIVERED. Ready to synchronize with the configured backend.'
+  return 'Saved on this device — NOT YET DELIVERED. Backend synchronization is not configured.'
 }
 
 function isEditable(report: EmergencyReport): boolean {
-  return report.syncStatus !== 'synchronized' && report.transmissionStatus === 'not_started'
+  return report.syncStatus !== 'synchronized' &&
+    report.syncAttempts === 0 &&
+    report.transmissionStatus === 'not_started'
 }
 
 export function EmergencyMode({
   online,
   offlineReady,
   onPendingChange,
+  initialTab = 'report',
 }: {
   online: boolean
   offlineReady: boolean
   onPendingChange: (count: number) => void
+  initialTab?: 'report' | 'queue' | 'settings'
 }) {
   const [reports, setReports] = useState<EmergencyReport[]>([])
   const [settings, setSettings] = useState<EmergencySettings>({
     id: 'settings',
     trustedContacts: [],
     lastSyncAt: null,
+    recentLocation: null,
   })
   const [draft, setDraft] = useState<EmergencyDraft>(emptyEmergencyDraft)
-  const [activeTab, setActiveTab] = useState<'report' | 'queue' | 'settings'>('report')
+  const [activeTab, setActiveTab] = useState<'report' | 'queue' | 'settings'>(initialTab)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [contactsInput, setContactsInput] = useState('')
+  const [contactDraft, setContactDraft] = useState({ id: '', name: '', relationship: '', phone: '', note: '' })
+  const [selectedContactIds, setSelectedContactIds] = useState<string[]>([])
   const [validationErrors, setValidationErrors] = useState<string[]>([])
   const [storageError, setStorageError] = useState('')
   const [actionMessage, setActionMessage] = useState('')
@@ -85,15 +89,18 @@ export function EmergencyMode({
   const [isSyncing, setIsSyncing] = useState(false)
   const [storageLoaded, setStorageLoaded] = useState(false)
   const [locationMessage, setLocationMessage] = useState('')
+  const [locationClock, setLocationClock] = useState(0)
 
   const selectedReport = reports.find(report => report.id === selectedId) ?? null
-  const canSync = Boolean(import.meta.env.VITE_ARKGRID_API_URL)
+  const canSync = true
   const pendingReports = useMemo(
-    () => reports.filter(report => report.syncStatus === 'pending' || report.syncStatus === 'failed'),
+    () => reports.filter(report => report.syncStatus !== 'synchronized'),
     [reports],
   )
   const smsMessage = selectedReport ? smsHandoffProvider.createMessage(selectedReport) : ''
-  const selectedRecipient = settings.trustedContacts[0] ?? ''
+  const selectedContacts = settings.trustedContacts.filter(contact => selectedContactIds.includes(contact.id))
+  const messageForContact = (contact: TrustedContact) =>
+    smsMessage + (contact.note ? `\nContact note: ${contact.note}` : '')
 
   useEffect(() => {
     let mounted = true
@@ -102,7 +109,6 @@ export function EmergencyMode({
         if (!mounted) return
         setReports(storedReports)
         setSettings(storedSettings)
-        setContactsInput(storedSettings.trustedContacts.join('\n'))
         setStorageLoaded(true)
       })
       .catch(() => {
@@ -127,8 +133,32 @@ export function EmergencyMode({
     return () => document.removeEventListener('visibilitychange', refresh)
   }, [])
 
+  useEffect(() => {
+    const updateClock = () => setLocationClock(Date.now())
+    const timer = window.setTimeout(updateClock, 0)
+    const interval = window.setInterval(updateClock, 60000)
+    return () => {
+      window.clearTimeout(timer)
+      window.clearInterval(interval)
+    }
+  }, [])
+
   function updateDraft<K extends keyof EmergencyDraft>(key: K, value: EmergencyDraft[K]) {
     setDraft(current => ({ ...current, [key]: value }))
+    setValidationErrors([])
+  }
+
+  function updateManualCoordinate(axis: 'latitude' | 'longitude', rawValue: string) {
+    setDraft(current => {
+      const next = { ...current, [axis]: rawValue === '' ? null : Number(rawValue) }
+      const hasCoordinates = next.latitude !== null || next.longitude !== null
+      return {
+        ...next,
+        locationSource: hasCoordinates ? 'manual' : 'unknown',
+        locationAccuracyMeters: null,
+        locationCapturedAt: null,
+      }
+    })
     setValidationErrors([])
   }
 
@@ -151,11 +181,14 @@ export function EmergencyMode({
       syncStatus: _syncStatus,
       syncAttemptedAt: _syncAttemptedAt,
       syncError: _syncError,
+      serverIncidentId: _serverIncidentId,
+      syncAttempts: _syncAttempts,
       ...reportDraft
     } = report
     setDraft(reportDraft)
     setEditingId(report.id)
     setSelectedId(null)
+    setSelectedContactIds([])
     setValidationErrors([])
     setActionMessage('')
     setActiveTab('report')
@@ -175,6 +208,8 @@ export function EmergencyMode({
         ...draft,
         id: editingId ?? createReportId(),
         createdAt: oldReport?.createdAt ?? new Date().toISOString(),
+        serverIncidentId: oldReport?.serverIncidentId ?? null,
+        syncAttempts: oldReport?.syncAttempts ?? 0,
         transmissionStatus: oldReport?.transmissionStatus === 'user_marked_attempted'
           ? oldReport.transmissionStatus
           : 'not_started',
@@ -190,6 +225,7 @@ export function EmergencyMode({
       await emergencyStorage.saveReport(report)
       setReports(current => [report, ...current.filter(item => item.id !== report.id)])
       setSelectedId(report.id)
+      setSelectedContactIds([])
       setEditingId(null)
       setActionMessage('Report saved on this device. Nothing has been sent.')
       setActiveTab('queue')
@@ -224,6 +260,13 @@ export function EmergencyMode({
     }
   }
 
+  function rememberRecentLocation(recentLocation: NonNullable<EmergencySettings['recentLocation']>) {
+    const nextSettings = { ...settings, recentLocation }
+    void emergencyStorage.saveSettings(nextSettings)
+      .then(() => setSettings(nextSettings))
+      .catch(() => setStorageError('Location was added to this report but could not be saved as the recent location.'))
+  }
+
   function requestLocation() {
     if (!('geolocation' in navigator)) {
       setLocationMessage('This browser does not provide location access. Enter a manual location instead.')
@@ -237,9 +280,28 @@ export function EmergencyMode({
           setLocationMessage('The device returned invalid coordinates. Enter a manual location instead.')
           return
         }
-        setDraft(current => ({ ...current, latitude, longitude }))
+        const capturedAt = new Date(position.timestamp)
+        if (!Number.isFinite(position.coords.accuracy) || position.coords.accuracy < 0 ||
+          !Number.isFinite(capturedAt.getTime())) {
+          setLocationMessage('The device returned incomplete location accuracy or timestamp data. Enter a manual location instead.')
+          return
+        }
+        setDraft(current => ({
+          ...current,
+          latitude,
+          longitude,
+          locationSource: 'device',
+          locationAccuracyMeters: position.coords.accuracy,
+          locationCapturedAt: capturedAt.toISOString(),
+        }))
+        rememberRecentLocation({
+          latitude,
+          longitude,
+          accuracyMeters: position.coords.accuracy,
+          capturedAt: capturedAt.toISOString(),
+        })
         setValidationErrors([])
-        setLocationMessage('Device coordinates added. Confirm them before saving.')
+        setLocationMessage('Device coordinates added. Review the reported accuracy and capture time before saving.')
       },
       error => {
         const explanation = error.code === error.PERMISSION_DENIED
@@ -249,40 +311,106 @@ export function EmergencyMode({
             : 'Location lookup timed out.'
         setLocationMessage(`${explanation} Enter a manual location instead.`)
       },
-      { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 0 },
     )
   }
 
-  async function saveTrustedContacts() {
-    const entries = contactsInput.split(/[\n,]/).map(value => value.trim()).filter(Boolean)
-    const normalized = entries.map(normalizePhoneNumber)
-    if (normalized.some(value => value === null) || entries.length > 5) {
-      setActionMessage('Use up to five contacts in international E.164 format, such as +14155550123.')
+  async function saveTrustedContact(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const phone = normalizePhoneNumber(contactDraft.phone)
+    if (!contactDraft.name.trim() || !contactDraft.relationship.trim() || !phone) {
+      setActionMessage('Enter a name, relationship, and phone in international E.164 format, for example +14155550123.')
       return
     }
-    const trustedContacts = Array.from(new Set(normalized.filter((value): value is string => value !== null)))
+    if (contactDraft.note.trim().length > 240) {
+      setActionMessage('Keep the optional contact note to 240 characters or fewer.')
+      return
+    }
+    if (!contactDraft.id && settings.trustedContacts.length >= 10) {
+      setActionMessage('A maximum of 10 contacts can be stored on this device.')
+      return
+    }
+    const contact: TrustedContact = {
+      id: contactDraft.id || createReportId(),
+      name: contactDraft.name.trim(),
+      relationship: contactDraft.relationship.trim(),
+      phone,
+      note: contactDraft.note.trim(),
+    }
+    const trustedContacts = contactDraft.id
+      ? settings.trustedContacts.map(item => item.id === contact.id ? contact : item)
+      : [...settings.trustedContacts, contact]
     const nextSettings = { ...settings, trustedContacts }
     try {
       await emergencyStorage.saveSettings(nextSettings)
       setSettings(nextSettings)
-      setContactsInput(trustedContacts.join('\n'))
-      setActionMessage('Trusted contacts saved only on this device.')
+      setContactDraft({ id: '', name: '', relationship: '', phone: '', note: '' })
+      setActionMessage('Contact saved only on this device; it is not stored in an account.')
     } catch {
       setStorageError('Could not save trusted contacts on this device.')
     }
   }
 
+  async function deleteTrustedContact(contact: TrustedContact) {
+    if (!window.confirm(`Delete ${contact.name} from this device?`)) return
+    const nextSettings = { ...settings, trustedContacts: settings.trustedContacts.filter(item => item.id !== contact.id) }
+    try {
+      await emergencyStorage.saveSettings(nextSettings)
+      setSettings(nextSettings)
+      setSelectedContactIds(current => current.filter(id => id !== contact.id))
+      if (contactDraft.id === contact.id) setContactDraft({ id: '', name: '', relationship: '', phone: '', note: '' })
+      setActionMessage(`${contact.name} was removed from this device.`)
+    } catch {
+      setStorageError('Could not remove the contact from this device.')
+    }
+  }
+
+  async function clearRecentLocation() {
+    if (!window.confirm('Delete the saved recent location from this device?')) return
+    const nextSettings = { ...settings, recentLocation: null }
+    try {
+      await emergencyStorage.saveSettings(nextSettings)
+      setSettings(nextSettings)
+      setActionMessage('Recent location deleted from this device.')
+    } catch {
+      setStorageError('Could not delete the recent location.')
+    }
+  }
+
+  function useRecentLocation() {
+    const location = settings.recentLocation
+    if (!location) return
+    setDraft(current => ({
+      ...current,
+      latitude: location.latitude,
+      longitude: location.longitude,
+      locationSource: 'device',
+      locationAccuracyMeters: location.accuracyMeters,
+      locationCapturedAt: location.capturedAt,
+    }))
+    setLocationMessage('Using the last explicitly captured location, not a live location. Check its capture time before saving.')
+    setValidationErrors([])
+    setActiveTab('report')
+    setSelectedId(null)
+  }
+
   async function syncPendingReports() {
-    if (!canSync || !online || isSyncing) return
+    if (!canSync || isSyncing || pendingReports.length === 0) return
+    const confirmed = window.confirm(
+      `Send ${pendingReports.length} locally saved report(s) to the configured ArkGrid demo backend? This shares their report details and location with that server. It does not contact responders.`,
+    )
+    if (!confirmed) return
     setIsSyncing(true)
     setActionMessage('')
     try {
       for (const report of pendingReports) {
         const attemptedAt = new Date().toISOString()
         try {
-          const result = await backend.sync(report)
+          const result = await arkgridApi.syncEmergencyReport(report)
           const synchronized = {
             ...report,
+            serverIncidentId: result.serverId,
+            syncAttempts: report.syncAttempts + 1,
             syncStatus: 'synchronized' as const,
             syncAttemptedAt: result.synchronizedAt,
             syncError: null,
@@ -299,9 +427,10 @@ export function EmergencyMode({
         } catch (error) {
           const failed = {
             ...report,
+            syncAttempts: report.syncAttempts + 1,
             syncStatus: 'failed' as const,
             syncAttemptedAt: attemptedAt,
-            syncError: mapSyncError(error),
+            syncError: error instanceof ApiError ? error.message : 'Synchronization failed. Your report remains saved on this device.',
           }
           try {
             await emergencyStorage.saveReport(failed)
@@ -422,8 +551,25 @@ export function EmergencyMode({
               </button>
               {locationMessage && <p role="status" className="text-sm text-slate-700">{locationMessage}</p>}
               {draft.latitude !== null && draft.longitude !== null && (
-                <p className="text-sm font-medium text-slate-800">Coordinates: {draft.latitude.toFixed(5)}, {draft.longitude.toFixed(5)}</p>
+                <div className="space-y-1 text-sm font-medium text-slate-800">
+                  <p>Coordinates: {draft.latitude.toFixed(5)}, {draft.longitude.toFixed(5)} · {draft.locationSource === 'device' ? 'device captured' : 'manually entered'}</p>
+                  {draft.locationSource === 'device' && draft.locationAccuracyMeters !== null && (
+                    <p>Browser-reported accuracy: ±{Math.round(draft.locationAccuracyMeters)} m · captured {formatTime(draft.locationCapturedAt)}</p>
+                  )}
+                  {draft.locationSource === 'manual' && <p>Manually entered coordinates; not device-verified.</p>}
+                </div>
               )}
+              <fieldset className="grid gap-3 sm:grid-cols-2">
+                <legend className="text-sm font-semibold text-slate-800">Or enter coordinates manually (optional)</legend>
+                <label className={labelClass}>Latitude
+                  <input className={inputClass} type="number" min="-90" max="90" step="any"
+                    value={draft.latitude ?? ''} onChange={event => updateManualCoordinate('latitude', event.target.value)} />
+                </label>
+                <label className={labelClass}>Longitude
+                  <input className={inputClass} type="number" min="-180" max="180" step="any"
+                    value={draft.longitude ?? ''} onChange={event => updateManualCoordinate('longitude', event.target.value)} />
+                </label>
+              </fieldset>
               <label className={labelClass}>
                 Manual location description
                 <input className={inputClass} maxLength={160} value={draft.manualLocation} onChange={event => updateDraft('manualLocation', event.target.value)} placeholder="Address, landmark, or clear directions" />
@@ -450,7 +596,7 @@ export function EmergencyMode({
               <p className="mt-1 text-sm text-slate-600">Local save is not server sync and does not mean an SMS was sent or delivered.</p>
             </div>
             {canSync ? (
-              <button type="button" disabled={!online || isSyncing || pendingReports.length === 0} onClick={() => void syncPendingReports()}
+              <button type="button" disabled={isSyncing || pendingReports.length === 0} onClick={() => void syncPendingReports()}
                 className="min-h-12 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white disabled:bg-slate-400">
                 {isSyncing ? 'Synchronizing…' : `Sync pending (${pendingReports.length})`}
               </button>
@@ -471,6 +617,7 @@ export function EmergencyMode({
                     <span className="block font-semibold text-slate-950">{report.severity} — {report.incidentType}</span>
                     <span className="mt-1 block break-all text-xs text-slate-600">{report.id} · {formatTime(report.createdAt)}</span>
                     <span className="mt-1 block text-sm text-slate-700">{describeStatus(report)}</span>
+                    {report.syncAttempts > 0 && <span className="mt-1 block text-xs text-slate-600">Sync attempts: {report.syncAttempts}</span>}
                   </button>
                   <div className="flex gap-2">
                     {isEditable(report) && <button type="button" className="min-h-11 rounded-md border border-slate-400 px-3 text-sm font-semibold" onClick={() => editReport(report)}>Edit</button>}
@@ -482,7 +629,7 @@ export function EmergencyMode({
           )}
           <div className="mt-5 rounded-lg bg-amber-50 p-4 text-sm text-amber-950">
             {canSync
-              ? 'Synchronization is offered only when this device reports online and the configured backend acknowledges the unique report ID.'
+              ? `Manual sync first checks backend health and then uses the report ID as an idempotency key. API base: ${apiBaseUrl || 'same-origin /api'}. Local records remain available if either request fails.`
               : 'There is no backend in this project yet. Reports remain local; synchronization will be added when an API is available.'}
           </div>
         </section>
@@ -491,22 +638,96 @@ export function EmergencyMode({
       {activeTab === 'settings' && (
         <section className="grid gap-5">
           <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-xl font-bold text-slate-950">Trusted rescue contacts</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-700">
-              Add up to five contacts, one per line, in international E.164 format including country code (for example +14155550123).
-              These numbers stay in this browser’s local IndexedDB. Verify them with the people responsible for receiving messages.
-            </p>
-            <label className={`${labelClass} mt-4`}>
-              Trusted phone numbers
-              <textarea className={inputClass} rows={4} value={contactsInput} onChange={event => setContactsInput(event.target.value)} placeholder="+14155550123" />
-            </label>
-            <button type="button" className="mt-3 min-h-12 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white" onClick={() => void saveTrustedContacts()}>
-              Save contacts on this device
-            </button>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-bold text-slate-950">Trusted contacts · local only</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-700">Contacts are stored only in this browser profile’s IndexedDB, not in an account or synced to a server. Browser data clearing may erase them. Use verified numbers in international E.164 format.</p>
+              </div>
+              <span className="rounded-full border border-amber-400 bg-amber-50 px-3 py-1 text-xs font-bold text-amber-950">ON THIS DEVICE</span>
+            </div>
+            <form className="mt-4 grid gap-3 sm:grid-cols-2" onSubmit={event => void saveTrustedContact(event)}>
+              <label className={labelClass}>Contact name
+                <input className={inputClass} required maxLength={80} value={contactDraft.name}
+                  onChange={event => setContactDraft(current => ({ ...current, name: event.target.value }))} />
+              </label>
+              <label className={labelClass}>Relationship
+                <input className={inputClass} required maxLength={40} value={contactDraft.relationship}
+                  placeholder="Parent, sibling, spouse, friend…"
+                  onChange={event => setContactDraft(current => ({ ...current, relationship: event.target.value }))} />
+              </label>
+              <label className={labelClass}>Phone number (international format)
+                <input className={inputClass} required type="tel" maxLength={24} value={contactDraft.phone}
+                  placeholder="+14155550123"
+                  onChange={event => setContactDraft(current => ({ ...current, phone: event.target.value }))} />
+              </label>
+              <label className={labelClass}>Optional note
+                <input className={inputClass} maxLength={240} value={contactDraft.note}
+                  placeholder="Optional message context"
+                  onChange={event => setContactDraft(current => ({ ...current, note: event.target.value }))} />
+              </label>
+              <div className="flex flex-wrap gap-2 sm:col-span-2">
+                <button type="submit" className="min-h-12 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white">
+                  {contactDraft.id ? 'Save contact changes' : 'Add trusted contact'}
+                </button>
+                {contactDraft.id && <button type="button" className="min-h-12 rounded-lg border border-slate-400 px-4 text-sm font-semibold"
+                  onClick={() => setContactDraft({ id: '', name: '', relationship: '', phone: '', note: '' })}>Cancel edit</button>}
+              </div>
+            </form>
+            {settings.trustedContacts.length === 0 ? (
+              <p className="mt-4 rounded-lg bg-slate-50 p-4 text-sm text-slate-700">No trusted contacts are stored on this device.</p>
+            ) : (
+              <ul className="mt-4 divide-y divide-slate-200 rounded-lg border border-slate-200 px-4">
+                {settings.trustedContacts.map(contact => (
+                  <li key={contact.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                    <div>
+                      <p className="font-semibold text-slate-950">{contact.name} <span className="font-normal text-slate-600">· {contact.relationship}</span></p>
+                      <p className="text-sm text-slate-700">{contact.phone}</p>
+                      {contact.note && <p className="text-xs text-slate-600">{contact.note}</p>}
+                      <p className="text-xs text-amber-900">Saved in this browser only</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <button type="button" className="min-h-10 rounded-md border border-slate-400 px-3 text-sm font-semibold"
+                        onClick={() => setContactDraft(contact)}>Edit</button>
+                      <button type="button" className="min-h-10 rounded-md border border-red-300 px-3 text-sm font-semibold text-red-800"
+                        onClick={() => void deleteTrustedContact(contact)}>Delete</button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-slate-950">My Recent Location</h2>
+                <p className="mt-1 text-sm text-slate-700">Only the latest location you explicitly captured is saved locally. There is no continuous or background tracking.</p>
+              </div>
+              <button type="button" className="min-h-11 rounded-lg border border-slate-400 px-4 text-sm font-semibold"
+                onClick={requestLocation}>Enable Location / refresh</button>
+            </div>
+            {settings.recentLocation ? (() => {
+              const recent = settings.recentLocation
+              const stale = locationClock > 0 && locationClock - Date.parse(recent.capturedAt) > 30 * 60 * 1000
+              return <div className="mt-4 rounded-lg bg-slate-50 p-4 text-sm">
+                <p className="font-semibold">{stale ? 'Stale saved location — not your current location' : 'Last captured location — not live tracking'}</p>
+                <p className="mt-1">Coordinates: {recent.latitude.toFixed(5)}, {recent.longitude.toFixed(5)}</p>
+                <p>Browser-reported accuracy: ±{Math.round(recent.accuracyMeters)} m</p>
+                <p>Captured: {formatTime(recent.capturedAt)}</p>
+                <a className="mt-2 inline-block font-semibold text-blue-800 underline"
+                  href={`https://www.openstreetmap.org/?mlat=${recent.latitude}&mlon=${recent.longitude}#map=16/${recent.latitude}/${recent.longitude}`}
+                  target="_blank" rel="noreferrer">View coordinates on OpenStreetMap</a>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" className="min-h-10 rounded-md border border-slate-400 px-3 font-semibold"
+                    onClick={useRecentLocation}>Use this saved sample in a report</button>
+                  <button type="button" className="min-h-10 rounded-md border border-red-300 px-3 font-semibold text-red-800"
+                    onClick={() => void clearRecentLocation()}>Delete recent location</button>
+                </div>
+              </div>
+            })() : <p className="mt-4 rounded-lg bg-slate-50 p-4 text-sm text-slate-700">No recent location saved. Select Enable Location / refresh to request one; the browser will ask for permission if needed.</p>}
           </div>
           <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 className="text-lg font-bold text-slate-950">Other communication options</h2>
-            <p className="mt-2 text-sm text-slate-700">Bluetooth relay: <strong>Not yet supported.</strong> This app does not scan, pair, or send data over Bluetooth.</p>
+            <p className="mt-2 text-sm text-slate-700">Bluetooth SOS relay is not implemented or no compatible receiver is available. This app does not scan, pair, or send data over Bluetooth.</p>
             <p className="mt-2 text-sm text-slate-700">A future multi-hop relay would require compatible devices, a defined relay protocol, authenticated messages, duplicate suppression, expiry rules, and acknowledgement handling.</p>
           </div>
         </section>
@@ -518,6 +739,7 @@ export function EmergencyMode({
             <div>
               <h2 className="text-xl font-bold text-slate-950">Review saved report</h2>
               <p className="mt-1 break-all text-xs text-slate-600">Report ID: {selectedReport.id}</p>
+              {selectedReport.serverIncidentId && <p className="mt-1 break-all text-xs text-slate-600">Backend incident ID: {selectedReport.serverIncidentId}</p>}
               <p className="mt-1 text-sm text-slate-600">Created: {formatTime(selectedReport.createdAt)}</p>
             </div>
             <button type="button" className="min-h-11 rounded-lg border border-slate-400 px-4 text-sm font-semibold" onClick={() => { setSelectedId(null); setActiveTab('queue') }}>
@@ -532,6 +754,27 @@ export function EmergencyMode({
             <Detail label="Location" value={selectedReport.latitude !== null && selectedReport.longitude !== null
               ? `${selectedReport.latitude.toFixed(5)}, ${selectedReport.longitude.toFixed(5)}`
               : selectedReport.manualLocation} />
+            <Detail label="Coordinate source" value={selectedReport.locationSource === 'device'
+              ? 'Device geolocation'
+              : selectedReport.locationSource === 'manual'
+                ? 'Manually entered'
+                : 'Not provided'} />
+            {selectedReport.locationSource === 'device' && selectedReport.locationAccuracyMeters !== null && (
+              <Detail label="Browser-reported accuracy" value={`±${Math.round(selectedReport.locationAccuracyMeters)} m`} />
+            )}
+            {selectedReport.locationCapturedAt && (
+              <Detail label="Coordinates captured" value={formatTime(selectedReport.locationCapturedAt)} />
+            )}
+            {selectedReport.latitude !== null && selectedReport.longitude !== null && (
+              <a
+                className="text-sm font-semibold text-blue-800 underline"
+                href={`https://www.openstreetmap.org/?mlat=${selectedReport.latitude}&mlon=${selectedReport.longitude}#map=16/${selectedReport.latitude}/${selectedReport.longitude}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                View reported coordinates on OpenStreetMap
+              </a>
+            )}
             <Detail label="Record status" value={describeStatus(selectedReport)} />
           </dl>
           {selectedReport.message && <p className="whitespace-pre-wrap break-words text-sm text-slate-800">{selectedReport.message}</p>}
@@ -544,45 +787,58 @@ export function EmergencyMode({
                 in your messaging app and requires working cellular service, SMS service, and sufficient signal.
               </p>
               {settings.trustedContacts.length === 0 ? (
-                <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-950">Save a verified trusted contact in Settings before opening an SMS composer.</p>
+                <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-950">
+                  <p>No local contacts are saved.</p>
+                  <button type="button" className="mt-2 font-bold underline" onClick={() => { setActiveTab('settings'); setSelectedId(null) }}>Add or manage trusted contacts</button>
+                </div>
               ) : (
-                <label className={labelClass}>
-                  Intended recipient
-                  <select className={inputClass} value={selectedRecipient} onChange={event => {
-                    const reordered = [event.target.value, ...settings.trustedContacts.filter(contact => contact !== event.target.value)]
-                    const nextSettings = { ...settings, trustedContacts: reordered }
-                    setSettings(nextSettings)
-                    void emergencyStorage.saveSettings(nextSettings).catch(() => setStorageError('Could not update the selected trusted contact.'))
-                  }}>
-                    {settings.trustedContacts.map(contact => <option key={contact}>{contact}</option>)}
-                  </select>
-                </label>
+                <fieldset className="space-y-2 rounded-lg border border-slate-200 p-4">
+                  <legend className="px-1 text-sm font-semibold text-slate-800">Choose intended recipient(s)</legend>
+                  <p className="text-xs text-slate-600">Location is shared only with contacts you select and only after you open each SMS composer. Review each exact recipient and message below.</p>
+                  {settings.trustedContacts.map(contact => (
+                    <label key={contact.id} className="flex min-h-11 items-center gap-3 text-sm">
+                      <input type="checkbox" checked={selectedContactIds.includes(contact.id)}
+                        onChange={event => setSelectedContactIds(current => event.target.checked
+                          ? [...current, contact.id]
+                          : current.filter(id => id !== contact.id))} />
+                      <span><strong>{contact.name}</strong> · {contact.relationship} · {contact.phone}</span>
+                    </label>
+                  ))}
+                </fieldset>
               )}
-              <label className={labelClass}>
-                SMS message preview
-                <textarea className={`${inputClass} font-mono text-sm`} rows={7} readOnly value={smsMessage} />
-              </label>
+              {selectedContacts.length === 0 ? (
+                <label className={labelClass}>
+                  SMS message preview (no recipient selected)
+                  <textarea aria-label="SMS message preview" className={`${inputClass} font-mono text-sm`} rows={9} readOnly value={smsMessage} />
+                </label>
+              ) : selectedContacts.map(contact => (
+                <label key={`preview-${contact.id}`} className={labelClass}>
+                  Exact SMS preview for {contact.name} · {contact.phone}
+                  <textarea aria-label={`SMS message preview for ${contact.name}`} className={`${inputClass} font-mono text-sm`} rows={9} readOnly value={messageForContact(contact)} />
+                </label>
+              ))}
               {isLikelyMultipartSms(smsMessage) && (
                 <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-950">This message exceeds 160 characters and may be split into multiple SMS segments.</p>
               )}
               <div className="flex flex-wrap gap-3">
-                {selectedRecipient && (
-                  <a
+                {selectedContacts.map(contact => (
+                  <a key={contact.id}
                     className="inline-flex min-h-14 items-center rounded-lg bg-red-700 px-5 text-base font-bold text-white"
-                    href={smsHandoffProvider.createHref(selectedRecipient, smsMessage)}
+                    href={smsHandoffProvider.createHref(contact.phone, messageForContact(contact))}
                     onClick={() => void updateReport({
                       ...selectedReport,
                       transmissionStatus: 'composer_opened',
                       transmissionAttemptedAt: new Date().toISOString(),
                     })}
                   >
-                    Open SMS composer for {selectedRecipient}
+                    Prepare SMS for {contact.name} ({contact.phone})
                   </a>
-                )}
+                ))}
                 <button type="button" className="min-h-14 rounded-lg border border-slate-400 px-5 text-base font-semibold text-slate-950" onClick={() => void copySmsMessage()}>
                   Copy message instead
                 </button>
               </div>
+              <p className="text-xs text-slate-600">The SMS protocol handoff may be unsupported by your current browser/device. Opening a composer does not send or deliver the message. If there is no compatible messaging app, copy the text and use a supported channel directly.</p>
               {(selectedReport.transmissionStatus === 'composer_opened' || selectedReport.transmissionStatus === 'copied_for_manual_send') && (
                 <div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
                   <p className="text-sm text-amber-950">Did you attempt to send this message? ArkGrid cannot confirm delivery.</p>

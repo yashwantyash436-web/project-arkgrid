@@ -12,6 +12,8 @@ import type { EmergencyReport } from './types'
 const report: EmergencyReport = {
   id: 'arkgrid-report-123',
   createdAt: '2026-10-14T05:00:00.000Z',
+  serverIncidentId: null,
+  syncAttempts: 0,
   incidentType: 'Medical emergency',
   severity: 'Critical',
   category: 'Medical assistance',
@@ -21,6 +23,9 @@ const report: EmergencyReport = {
   latitude: 27.7172,
   longitude: 85.324,
   manualLocation: 'Near the clinic',
+  locationSource: 'device',
+  locationAccuracyMeters: 25,
+  locationCapturedAt: '2026-10-14T05:00:00.000Z',
   transmissionStatus: 'not_started',
   transmissionAttemptedAt: null,
   syncStatus: 'pending',

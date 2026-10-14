@@ -18,6 +18,21 @@ export const emergencyCategories = [
 export type IncidentType = (typeof incidentTypes)[number]
 export type EmergencyCategory = (typeof emergencyCategories)[number]
 export type Severity = 'Critical' | 'High' | 'Moderate'
+export type LocationSource = 'device' | 'manual' | 'unknown'
+export type TrustedContact = {
+  id: string
+  name: string
+  relationship: string
+  phone: string
+  note: string
+}
+
+export type RecentLocation = {
+  latitude: number
+  longitude: number
+  accuracyMeters: number
+  capturedAt: string
+}
 
 export type EmergencyDraft = {
   incidentType: IncidentType
@@ -29,6 +44,9 @@ export type EmergencyDraft = {
   latitude: number | null
   longitude: number | null
   manualLocation: string
+  locationSource: LocationSource
+  locationAccuracyMeters: number | null
+  locationCapturedAt: string | null
 }
 
 export type TransmissionStatus =
@@ -42,6 +60,8 @@ export type SyncStatus = 'not_configured' | 'pending' | 'synchronized' | 'failed
 export type EmergencyReport = EmergencyDraft & {
   id: string
   createdAt: string
+  serverIncidentId: string | null
+  syncAttempts: number
   transmissionStatus: TransmissionStatus
   transmissionAttemptedAt: string | null
   syncStatus: SyncStatus
@@ -51,8 +71,9 @@ export type EmergencyReport = EmergencyDraft & {
 
 export type EmergencySettings = {
   id: 'settings'
-  trustedContacts: string[]
+  trustedContacts: TrustedContact[]
   lastSyncAt: string | null
+  recentLocation: RecentLocation | null
 }
 
 export const emptyEmergencyDraft: EmergencyDraft = {
@@ -65,6 +86,9 @@ export const emptyEmergencyDraft: EmergencyDraft = {
   latitude: null,
   longitude: null,
   manualLocation: '',
+  locationSource: 'unknown',
+  locationAccuracyMeters: null,
+  locationCapturedAt: null,
 }
 
 export function validateEmergencyDraft(draft: EmergencyDraft): string[] {
@@ -86,6 +110,22 @@ export function validateEmergencyDraft(draft: EmergencyDraft): string[] {
     !isValidCoordinate(draft.latitude, draft.longitude)
   ) {
     errors.push('The selected coordinates are invalid.')
+  }
+  if (draft.locationSource === 'device' && (draft.latitude === null || draft.longitude === null)) {
+    errors.push('Device location metadata requires a coordinate pair.')
+  }
+  if (
+    draft.locationAccuracyMeters !== null &&
+    (!Number.isFinite(draft.locationAccuracyMeters) || draft.locationAccuracyMeters < 0)
+  ) {
+    errors.push('The device-reported location accuracy is invalid.')
+  }
+  if (draft.locationCapturedAt !== null && !Number.isFinite(Date.parse(draft.locationCapturedAt))) {
+    errors.push('The location capture time is invalid.')
+  }
+  if (draft.locationSource !== 'device' &&
+    (draft.locationAccuracyMeters !== null || draft.locationCapturedAt !== null)) {
+    errors.push('Accuracy and capture time are only available for device-captured coordinates.')
   }
   if (!hasLatitude && !hasLongitude && !draft.manualLocation.trim()) {
     errors.push('Add a location description or allow location access.')

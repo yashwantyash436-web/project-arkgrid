@@ -74,10 +74,18 @@ export function formatSmsMessage(report: EmergencyReport): string {
     ? `${report.latitude.toFixed(5)},${report.longitude.toFixed(5)}`
     : ''
   const location = [coordinates, report.manualLocation.trim()].filter(Boolean).join(' / ')
+  const mapLink = report.latitude !== null && report.longitude !== null
+    ? `https://www.openstreetmap.org/?mlat=${report.latitude}&mlon=${report.longitude}#map=16/${report.latitude}/${report.longitude}`
+    : ''
   const parts = [
     `ARKGRID SOS ${report.id}`,
     `${report.severity} ${report.incidentType}; ${report.peopleAffected} affected`,
     `Location: ${location}`,
+    mapLink ? `Map: ${mapLink}` : '',
+    report.locationSource === 'device' && report.locationAccuracyMeters !== null
+      ? `Browser-reported accuracy: ±${Math.round(report.locationAccuracyMeters)} m`
+      : report.locationSource === 'manual' ? 'Coordinates were entered manually.' : '',
+    report.locationCapturedAt ? `Location captured: ${new Date(report.locationCapturedAt).toISOString()}` : '',
     `Time: ${new Date(report.createdAt).toISOString()}`,
     `Need: ${report.category}`,
     report.message.trim() ? `Details: ${report.message.trim()}` : '',

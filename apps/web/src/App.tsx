@@ -1,85 +1,95 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Activity, AlertTriangle, ClipboardList, Database, LayoutDashboard, Map, Menu, Radio, Satellite, ShieldAlert, Truck, Wifi, WifiOff, X } from 'lucide-react'
+import { Activity, ClipboardList, Database, LayoutDashboard, Map, Menu, Phone, Radio, Satellite, ShieldAlert, Truck, Wifi, WifiOff, X } from 'lucide-react'
 import { MapView } from './components/MapView'
-import { areas, incidents, resources, type Incident } from './data/demoData'
+import { IncidentCoordinator } from './components/IncidentCoordinator'
+import { LiveMonitoring } from './components/LiveMonitoring'
+import { SourceStatusPanel } from './components/SourceStatusPanel'
+import { DashboardSummary } from './components/DashboardSummary'
+import { arkgridApi, ApiError, apiBaseUrl } from './api/client'
+import { areas } from './data/demoData'
 import { EmergencyMode } from './emergency/EmergencyMode'
 
-type Page = 'Overview' | 'Live monitoring' | 'Interactive map' | 'Flood & satellite' | 'Citizen SOS' | 'Incidents' | 'Rescue coordination' | 'Data & system status' | 'Emergency Mode'
+type Page = 'Overview' | 'Live monitoring' | 'Interactive map' | 'Flood & satellite' | 'Citizen SOS' | 'Incidents' | 'Rescue coordination' | 'Trusted contacts' | 'Data & system status' | 'Emergency Mode'
 type ConnectionState = 'online' | 'offline' | 'reconnecting'
+type BackendState = 'checking' | 'available' | 'unavailable'
 type InstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> }
-const navigation: [Page, typeof LayoutDashboard][] = [['Overview', LayoutDashboard], ['Emergency Mode', ShieldAlert], ['Live monitoring', Radio], ['Interactive map', Map], ['Flood & satellite', Satellite], ['Citizen SOS', ShieldAlert], ['Incidents', ClipboardList], ['Rescue coordination', Truck], ['Data & system status', Database]]
-const styles = { Critical: 'bg-red-50 text-red-800 ring-red-200', High: 'bg-amber-50 text-amber-800 ring-amber-200', Moderate: 'bg-blue-50 text-blue-800 ring-blue-200' }
+const navigation: [Page, typeof LayoutDashboard][] = [['Overview', LayoutDashboard], ['Emergency Mode', ShieldAlert], ['Live monitoring', Radio], ['Interactive map', Map], ['Flood & satellite', Satellite], ['Citizen SOS', ShieldAlert], ['Incidents', ClipboardList], ['Rescue coordination', Truck], ['Trusted contacts', Phone], ['Data & system status', Database]]
 function Panel({ title, children, action }: { title: string; children: React.ReactNode; action?: React.ReactNode }) { return <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-sm font-semibold text-slate-900">{title}</h2>{action}</div>{children}</section> }
 function Simulated() { return <span className="inline-flex rounded-full bg-amber-50 px-2 py-1 text-[10px] font-bold tracking-wide text-amber-800 ring-1 ring-amber-200">SIMULATED · DEMO ONLY</span> }
 
-function IncidentView({ selected, setSelected }: { selected: Incident; setSelected: (item: Incident) => void }) { return <div className="grid gap-5 xl:grid-cols-[1.15fr_.85fr]"><Panel title="Incident queue" action={<Simulated />}><div className="divide-y divide-slate-100">{incidents.map(item => <button key={item.id} onClick={() => setSelected(item)} className="flex w-full items-start justify-between gap-4 py-4 text-left first:pt-0"><div><p className="text-sm font-semibold text-slate-900">{item.title}</p><p className="mt-1 text-xs text-slate-500">{item.id} · {item.location} · {item.status}</p></div><span className={`rounded-full px-2 py-1 text-xs font-semibold ring-1 ${styles[item.severity]}`}>{item.severity}</span></button>)}</div></Panel><Panel title="Incident detail"><Simulated /><h3 className="mt-4 text-lg font-semibold text-slate-900">{selected.title}</h3><dl className="mt-5 grid grid-cols-2 gap-4 text-sm"><div><dt className="text-slate-500">Reference</dt><dd className="font-medium">{selected.id}</dd></div><div><dt className="text-slate-500">Status</dt><dd className="font-medium">{selected.status}</dd></div><div className="col-span-2"><dt className="text-slate-500">Location</dt><dd className="font-medium">{selected.location}</dd></div></dl><p className="mt-5 rounded-lg bg-slate-50 p-3 text-sm leading-6 text-slate-600">{selected.description}</p></Panel></div> }
-
 function Sos() {
-  const [sent, setSent] = useState(false)
-  const [form, setForm] = useState({ name: '', contact: '', need: '', people: '' })
+  const [submitted, setSubmitted] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [incidentId, setIncidentId] = useState('')
+  const [form, setForm] = useState({ need: '', severity: 'Moderate', people: '', location: '', message: '' })
   const peopleCount = Number(form.people)
   const valid =
-    form.name.trim().length > 0 &&
-    form.contact.trim().length > 0 &&
     form.need.length > 0 &&
+    form.location.trim().length > 0 &&
     Number.isInteger(peopleCount) &&
     peopleCount >= 1
 
+  async function submitReport(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!valid || submitting) return
+    setSubmitting(true)
+    setError('')
+    try {
+      const idempotencyKey = crypto.randomUUID()
+      const saved = await arkgridApi.createIncident({
+        incidentType: form.need,
+        severity: form.severity,
+        category: form.need,
+        message: form.message.trim(),
+        peopleAffected: peopleCount,
+        manualLocation: form.location.trim(),
+        locationConfidence: 'low',
+        medicalUrgency: form.need === 'Medical assistance',
+        dataClass: 'simulation',
+        source: 'citizen_sos_ui',
+      }, idempotencyKey)
+      setIncidentId(saved.id)
+      setSubmitted(true)
+    } catch (cause) {
+      setError(cause instanceof ApiError
+        ? `${cause.message} This report was not confirmed by the server. Use Emergency Mode to save it on this device.`
+        : 'The backend did not confirm this report. Use Emergency Mode to save it on this device.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
     <div className="mx-auto max-w-2xl">
-      <Panel title="Submit a simulated SOS">
+      <Panel title="Citizen SOS report">
         <p className="mb-5 text-sm text-slate-600">
-          This demo form does not contact emergency services, store information, or provide offline synchronisation.
+          Demo environment only. Do not enter real personal or sensitive information. A successful response means persisted in this demo backend, not dispatched to emergency services. For local-only offline saving, open Emergency Mode.
         </p>
-        {sent ? (
+        {submitted ? (
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
-            Simulated report validated for the demo. No report was transmitted.
+            Demo report {incidentId} was acknowledged and persisted by the ArkGrid backend. No rescue service or responder was contacted.
           </div>
         ) : (
-          <form
-            className="grid gap-4"
-            onSubmit={event => {
-              event.preventDefault()
-              if (valid) setSent(true)
-            }}
-          >
-            <label className="grid gap-1 text-sm font-medium">
-              Name or identifier
-              <input
-                required
-                value={form.name}
-                onChange={event => setForm({ ...form, name: event.target.value })}
-                className="rounded-lg border border-slate-300 px-3 py-2"
-                placeholder="Demo participant"
-              />
-            </label>
-            <label className="grid gap-1 text-sm font-medium">
-              Safe contact method
-              <input
-                required
-                value={form.contact}
-                onChange={event => setForm({ ...form, contact: event.target.value })}
-                className="rounded-lg border border-slate-300 px-3 py-2"
-                placeholder="Demo contact only"
-              />
-            </label>
+          <form className="grid gap-4" onSubmit={submitReport}>
             <div className="grid gap-4 sm:grid-cols-2">
-              <label className="grid gap-1 text-sm font-medium">
-                Primary need
+              <label className="grid gap-1 text-sm font-medium">Primary need
                 <select
                   required
                   value={form.need}
                   onChange={event => setForm({ ...form, need: event.target.value })}
-                  className="rounded-lg border border-slate-300 px-3 py-2"
+                  className="min-h-11 rounded-lg border border-slate-300 px-3"
                 >
                   <option value="">Select a need</option>
-                  <option>Medical support</option>
-                  <option>Evacuation support</option>
+                  <option>Medical assistance</option>
+                  <option>Evacuation assistance</option>
                   <option>Food or water</option>
                 </select>
               </label>
-              <label className="grid gap-1 text-sm font-medium">
-                People affected
+              <label className="grid gap-1 text-sm font-medium">Reported severity
+                <select value={form.severity} onChange={event => setForm({ ...form, severity: event.target.value })} className="min-h-11 rounded-lg border border-slate-300 px-3"><option>Moderate</option><option>High</option><option>Critical</option></select>
+              </label>
+              <label className="grid gap-1 text-sm font-medium">People affected
                 <input
                   required
                   min="1"
@@ -87,15 +97,22 @@ function Sos() {
                   type="number"
                   value={form.people}
                   onChange={event => setForm({ ...form, people: event.target.value })}
-                  className="rounded-lg border border-slate-300 px-3 py-2"
+                  className="min-h-11 rounded-lg border border-slate-300 px-3"
                 />
               </label>
+              <label className="grid gap-1 text-sm font-medium">Location description
+                <input required maxLength={160} value={form.location} onChange={event => setForm({ ...form, location: event.target.value })} className="min-h-11 rounded-lg border border-slate-300 px-3" placeholder="Enter a location (demo data only)" />
+              </label>
             </div>
+            <label className="grid gap-1 text-sm font-medium">Additional details
+              <textarea maxLength={500} value={form.message} onChange={event => setForm({ ...form, message: event.target.value })} className="min-h-24 rounded-lg border border-slate-300 px-3 py-2" />
+            </label>
+            {error && <p role="alert" className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-900">{error}</p>}
             <button
-              className="mt-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-              disabled={!valid}
+              className="min-h-11 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+              disabled={!valid || submitting}
             >
-              Validate simulated SOS
+              {submitting ? 'Submitting…' : 'Submit demo report to backend'}
             </button>
           </form>
         )}
@@ -104,26 +121,53 @@ function Sos() {
   )
 }
 
-function Content({ page, area, setArea, selected, setSelected, online, offlineReady, onPendingChange }: { page: Page; area: keyof typeof areas; setArea: (a: keyof typeof areas) => void; selected: Incident; setSelected: (i: Incident) => void; online: boolean; offlineReady: boolean; onPendingChange: (count: number) => void }) {
- const [point, setPoint] = useState('No custom point selected'); const current = areas[area]
- const mapPanel = <Panel title="Operational map" action={<select aria-label="Scenario" value={area} onChange={e => setArea(e.target.value as keyof typeof areas)} className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs"><option value="nepal">Nepal historical scenario</option><option value="custom">Custom area</option></select>}><div className="h-[380px]"><MapView center={current.center} zoom={current.zoom} onAreaSelect={(lat,lng) => setPoint(`Custom point: ${lat.toFixed(3)}, ${lng.toFixed(3)}`)} /></div><p className="mt-3 text-xs text-slate-500">{current.label}. Click the map to select an AOI point — {point}. Markers are simulated fixtures; map data © OpenStreetMap contributors.</p></Panel>
+function BackendStatus() {
+  const [status, setStatus] = useState('Checking backend…')
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let active = true
+    void arkgridApi.health()
+      .then(result => {
+        if (active) setStatus(`Available · ${result.database}`)
+      })
+      .catch(cause => {
+        if (!active) return
+        setStatus('Unavailable')
+        setError(cause instanceof ApiError ? cause.message : 'Health check failed.')
+      })
+    return () => { active = false }
+  }, [])
+  return <Panel title="API backend"><p className={`text-sm font-semibold ${status === 'Unavailable' ? 'text-red-800' : 'text-slate-800'}`}>{status}</p><p className="mt-1 break-all text-xs text-slate-500">Base URL: {apiBaseUrl || 'same-origin /api'} · {error || 'Health endpoint check'}</p></Panel>
+}
+
+function Content({ page, area, setArea, online, offlineReady, pendingReports, onPendingChange, onNavigate }: { page: Page; area: keyof typeof areas; setArea: (a: keyof typeof areas) => void; online: boolean; offlineReady: boolean; pendingReports: number; onPendingChange: (count: number) => void; onNavigate: (page: Page) => void }) {
+ const [point, setPoint] = useState('No custom point selected')
+ const current = areas[area]
+ const mapPanel = <Panel title="Operational map" action={<select aria-label="Scenario" value={area} onChange={event => setArea(event.target.value as keyof typeof areas)} className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs"><option value="nepal">Nepal historical scenario</option><option value="custom">Custom area</option></select>}><div className="h-[380px]"><MapView center={current.center} zoom={current.zoom} onAreaSelect={(lat, lng) => setPoint(`Selected point: ${lat.toFixed(4)}, ${lng.toFixed(4)}`)} /></div><p className="mt-3 text-xs text-slate-500">{current.label}. Map clicks select a point only, not a polygon area of interest — {point}. Orange/red markers are simulated fixtures. Map data © OpenStreetMap contributors.</p></Panel>
  if (page === 'Emergency Mode') return <EmergencyMode online={online} offlineReady={offlineReady} onPendingChange={onPendingChange} />
+ if (page === 'Trusted contacts') return <EmergencyMode online={online} offlineReady={offlineReady} onPendingChange={onPendingChange} initialTab="settings" />
  if (page === 'Interactive map') return mapPanel
  if (page === 'Citizen SOS') return <Sos />
- if (page === 'Incidents') return <IncidentView selected={selected} setSelected={setSelected} />
- if (page === 'Live monitoring') return <div className="grid gap-5 lg:grid-cols-2"><Panel title="Earthquake monitoring"><div className="rounded-lg border border-dashed border-slate-300 p-5 text-sm text-slate-600"><AlertTriangle className="mb-2 text-slate-400" />Live provider integration has not been configured. No earthquake events are displayed or fabricated.</div></Panel><Panel title="Refresh state"><p className="text-sm text-slate-600">External feeds will be fetched by the FastAPI backend in a later step. This frontend has no live-data connection.</p></Panel></div>
- if (page === 'Flood & satellite') return <div className="grid gap-5 lg:grid-cols-2"><Panel title="Flood information"><p className="text-sm text-slate-600">Historical scenario context will be added after a published Nepal event and licence are verified. No live flood extent is shown.</p></Panel><Panel title="Satellite analysis"><p className="text-sm text-slate-600">Not operational. Imagery discovery and analysis require backend credentials, quotas, provenance, and validation.</p></Panel></div>
- if (page === 'Rescue coordination') return <Panel title="Simulated rescue resources" action={<Simulated />}><div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="border-b text-xs uppercase tracking-wide text-slate-500"><tr><th className="pb-3">Reference</th><th className="pb-3">Resource</th><th className="pb-3">State</th><th className="pb-3">Location</th></tr></thead><tbody>{resources.map(row => <tr key={row[0]} className="border-b border-slate-100"><td className="py-3 font-medium">{row[0]}</td>{row.slice(1).map(cell => <td key={cell} className="py-3 text-slate-600">{cell}</td>)}</tr>)}</tbody></table></div></Panel>
- if (page === 'Data & system status') return <div className="grid gap-5 lg:grid-cols-2"><Panel title="System status"><ul className="space-y-3 text-sm"><li className="flex justify-between"><span>Frontend shell</span><b className="text-emerald-700">Available</b></li><li className="flex justify-between"><span>External provider API</span><b className="text-slate-500">Not connected</b></li><li className="flex justify-between"><span>Offline SOS sync</span><b className="text-slate-500">Not operational</b></li></ul></Panel><Panel title="Data classes"><p className="text-sm text-slate-600">Current fixtures: <b>simulation</b>. Future provider content will distinguish observations, forecasts, historical references, and ArkGrid analysis.</p></Panel></div>
- return <div className="grid gap-5 xl:grid-cols-[1.5fr_1fr]"><div className="space-y-5"><Panel title="Operational overview" action={<span className="text-xs text-slate-500">Demo environment</span>}><div className="grid gap-3 sm:grid-cols-3">{[['Open incidents','3'],['Provider feeds','Not connected'],['Resources','3 simulated']].map(([label,value]) => <div key={label} className="rounded-lg bg-slate-50 p-4"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 text-lg font-semibold text-slate-900">{value}</p></div>)}</div></Panel>{mapPanel}</div><div className="space-y-5"><Panel title="Attention required"><p className="text-sm text-slate-600">No live alerts are loaded. Connect approved sources through the backend before treating this view as operational.</p></Panel><Panel title="Scenario safeguards"><Simulated /><p className="mt-3 text-sm text-slate-600">The Nepal scenario is historical context. SOS reports and resources are fixtures for demonstration only.</p></Panel></div></div>
+ if (page === 'Incidents') return <IncidentCoordinator heading="Persisted incident queue" />
+ if (page === 'Live monitoring') return <LiveMonitoring center={current.center} />
+ if (page === 'Flood & satellite') return <div className="space-y-5"><Panel title="Flood and satellite data limits"><p className="text-sm text-slate-700">No live flood forecast, flood extent, or processed satellite imagery is connected. The Copernicus catalogue status may expose public product metadata only; it does not provide a rendered image or validated impact analysis.</p><p className="mt-2 text-sm text-slate-700">GloFAS product/licence/access requirements and CEMS activation workflows require additional validation. Do not treat source-page reachability as a hazard observation.</p></Panel><SourceStatusPanel /></div>
+ if (page === 'Rescue coordination') return <IncidentCoordinator heading="Rescue coordination and persisted incidents" />
+ if (page === 'Data & system status') return <div className="space-y-5"><BackendStatus /><SourceStatusPanel /><Panel title="Data and safety boundaries"><p className="text-sm text-slate-700">USGS records are labelled external observations. Citizen SOS form entries are explicitly simulated; synchronized Emergency Mode reports are unverified citizen reports. Resources are simulated. The browser-online indicator is only a connectivity hint; offline reports remain locally stored until the user confirms manual upload and the backend acknowledges it. Neither SMS handoff nor this coordinator dispatches real responders.</p></Panel></div>
+ return <div className="space-y-5"><DashboardSummary pendingReports={pendingReports} /><div className="grid gap-5 xl:grid-cols-[1.5fr_1fr]"><div className="space-y-5"><Panel title="Operational overview" action={<span className="text-xs text-slate-500">Prototype · no operational dispatch</span>}><p className="text-sm leading-6 text-slate-700">Review recent external observations alongside persisted, unverified incident records. Scores are transparent triage aids, not predictions; resource assignments are fictional and do not dispatch responders.</p></Panel><LiveMonitoring center={current.center} compact /><IncidentCoordinator heading="Recent persisted incidents" /></div><div className="space-y-5"><BackendStatus /><Panel title="Attention required"><p className="text-sm text-slate-600">Review new reports, stale/unavailable data, and queued SOS items. Verify source freshness, location, and incident details independently before any real-world decision.</p>{pendingReports > 0 && <button type="button" className="mt-3 min-h-11 rounded-lg border border-amber-500 bg-amber-50 px-4 text-sm font-bold text-amber-950" onClick={() => onNavigate('Emergency Mode')}>{pendingReports} local SOS report(s) not yet synchronized</button>}</Panel><Panel title="Scenario safeguards"><Simulated /><p className="mt-3 text-sm text-slate-600">Nepal is one historical demonstration area; custom map points are available. The priority score is an explainable rules aid, not a trained AI model and not a sole rescue decision basis.</p></Panel></div></div></div>
 }
 
 export default function App() {
   const [page, setPage] = useState<Page>(() => window.location.pathname.endsWith('/emergency') ? 'Emergency Mode' : 'Overview')
   const [area, setArea] = useState<keyof typeof areas>('nepal')
-  const [selected, setSelected] = useState(incidents[0])
   const [open, setOpen] = useState(false)
   const [connection, setConnection] = useState<ConnectionState>(() => navigator.onLine ? 'online' : 'offline')
+  const [backendState, setBackendState] = useState<BackendState>('checking')
+  const [lastBackendSuccessAt, setLastBackendSuccessAt] = useState<string | null>(() => {
+    try { return window.localStorage.getItem('arkgrid-last-api-success') } catch { return null }
+  })
+  const [automaticEmergency, setAutomaticEmergency] = useState(() => {
+    try { return window.localStorage.getItem('arkgrid-auto-emergency') === 'true' } catch { return false }
+  })
   const [pendingCount, setPendingCount] = useState(0)
   const [offlineReady, setOfflineReady] = useState(false)
   const [offlineError, setOfflineError] = useState(false)
@@ -136,14 +180,40 @@ export default function App() {
   const updatePendingCount = useCallback((count: number) => setPendingCount(count), [])
 
   useEffect(() => {
-    let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+    let active = true
+    let requestInFlight = false
+
+    async function checkBackend() {
+      if (!active || requestInFlight) return
+      if (!navigator.onLine) {
+        setBackendState('unavailable')
+        return
+      }
+      requestInFlight = true
+      try {
+        await arkgridApi.health()
+        if (active) {
+          const checkedAt = new Date().toISOString()
+          setBackendState('available')
+          setLastBackendSuccessAt(checkedAt)
+          try { window.localStorage.setItem('arkgrid-last-api-success', checkedAt) } catch { /* Status still updates for this session. */ }
+        }
+      } catch {
+        if (active) setBackendState('unavailable')
+      } finally {
+        requestInFlight = false
+      }
+    }
+
     const onOffline = () => {
-      if (reconnectTimer) clearTimeout(reconnectTimer)
       setConnection('offline')
+      setBackendState('unavailable')
     }
     const onOnline = () => {
       setConnection('reconnecting')
-      reconnectTimer = setTimeout(() => setConnection('online'), 1500)
+      void checkBackend().finally(() => {
+        if (active) setConnection('online')
+      })
     }
     const onInstallPrompt = (event: Event) => {
       event.preventDefault()
@@ -158,6 +228,12 @@ export default function App() {
     window.addEventListener('online', onOnline)
     window.addEventListener('beforeinstallprompt', onInstallPrompt)
     window.addEventListener('appinstalled', onInstalled)
+    window.addEventListener('focus', checkBackend)
+    document.addEventListener('visibilitychange', checkBackend)
+    void checkBackend()
+    const healthTimer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void checkBackend()
+    }, 30000)
 
     if (isProduction && 'serviceWorker' in navigator) {
       const onControllerChange = () => setOfflineReady(Boolean(navigator.serviceWorker.controller))
@@ -189,7 +265,10 @@ export default function App() {
         setOfflineError(true)
       })
       return () => {
-        if (reconnectTimer) clearTimeout(reconnectTimer)
+        active = false
+        window.clearInterval(healthTimer)
+        window.removeEventListener('focus', checkBackend)
+        document.removeEventListener('visibilitychange', checkBackend)
         window.removeEventListener('offline', onOffline)
         window.removeEventListener('online', onOnline)
         window.removeEventListener('beforeinstallprompt', onInstallPrompt)
@@ -198,9 +277,11 @@ export default function App() {
         navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange)
       }
     }
-
     return () => {
-      if (reconnectTimer) clearTimeout(reconnectTimer)
+      active = false
+      window.clearInterval(healthTimer)
+      window.removeEventListener('focus', checkBackend)
+      document.removeEventListener('visibilitychange', checkBackend)
       window.removeEventListener('offline', onOffline)
       window.removeEventListener('online', onOnline)
       window.removeEventListener('beforeinstallprompt', onInstallPrompt)
@@ -223,16 +304,31 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!automaticEmergency || backendState !== 'unavailable' || page !== 'Overview') return
+    const timer = window.setTimeout(() => navigate('Emergency Mode'), 0)
+    return () => window.clearTimeout(timer)
+  }, [automaticEmergency, backendState, page])
+
+  function toggleAutomaticEmergency(enabled: boolean) {
+    setAutomaticEmergency(enabled)
+    try {
+      window.localStorage.setItem('arkgrid-auto-emergency', String(enabled))
+    } catch {
+      setAutomaticEmergency(false)
+    }
+  }
+
+  useEffect(() => {
     const restorePage = () => setPage(window.location.pathname.endsWith('/emergency') ? 'Emergency Mode' : 'Overview')
     window.addEventListener('popstate', restorePage)
     return () => window.removeEventListener('popstate', restorePage)
   }, [])
 
   const connectionLabel = connection === 'offline'
-    ? 'Offline (browser hint)'
+    ? 'Browser offline (hint)'
     : connection === 'reconnecting'
-      ? 'Reconnecting (browser hint)'
-      : 'Online (browser hint)'
+      ? 'Browser online · checking API'
+      : 'Browser online (hint)'
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-800">
@@ -245,6 +341,9 @@ export default function App() {
         <div className="flex flex-wrap items-center justify-end gap-2">
           <span role="status" aria-live="polite" className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold ${connection === 'offline' ? 'bg-red-100 text-red-900' : connection === 'reconnecting' ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-900'}`}>
             {connection === 'offline' ? <WifiOff size={14} /> : <Wifi size={14} />}{connectionLabel}
+          </span>
+          <span role="status" aria-live="polite" className={`rounded-full border px-2 py-1 text-xs font-semibold ${backendState === 'available' ? 'border-emerald-300 bg-emerald-50 text-emerald-950' : backendState === 'unavailable' ? 'border-red-300 bg-red-50 text-red-950' : 'border-amber-300 bg-amber-50 text-amber-950'}`}>
+            API: {backendState === 'available' ? 'Reachable' : backendState === 'unavailable' ? 'Unavailable' : 'Checking'}
           </span>
           {pendingCount > 0 && <button className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-950" onClick={() => navigate('Emergency Mode')}>{pendingCount} saved report{pendingCount === 1 ? '' : 's'}</button>}
           <button className="min-h-10 rounded-lg bg-red-700 px-3 text-sm font-bold text-white" onClick={() => navigate('Emergency Mode')}>Emergency Mode</button>
@@ -260,10 +359,28 @@ export default function App() {
             : offlineError
               ? 'Offline caching could not be enabled in this browser. Keep a connection available.'
               : 'Offline capability is not ready yet. Keep the app online until its first successful cache completes.')
-          : 'Offline app caching is enabled in production builds; this development server does not register the service worker.'}
+          : 'This Vite development server does not register the offline service worker. Build and preview once online to cache the app shell; first-visit offline use is not available.'}
         {isProduction && !('serviceWorker' in navigator) && ' This browser does not support service workers.'}
-        {isProduction && ' Browser connection status is a hint; it does not verify internet access, backend reachability, or SMS delivery.'}
+        {' Browser connectivity is a hint; the separate API status comes from a backend health request. Neither status confirms external feeds or SMS delivery.'}
       </div>
+      {(connection === 'offline' || backendState === 'unavailable') && (
+        <section role="alert" className="border-b border-red-300 bg-red-50 px-4 py-3 text-sm text-red-950 lg:px-7">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="font-semibold">
+              {connection === 'offline'
+                ? `Browser reports offline. API requests may not work${lastBackendSuccessAt ? `; last API success ${new Date(lastBackendSuccessAt).toLocaleTimeString()}` : ''}.`
+                : `ArkGrid backend health check failed although the browser reports online${lastBackendSuccessAt ? `; last API success ${new Date(lastBackendSuccessAt).toLocaleTimeString()}` : ''}.`}
+              {' '}You can prepare SOS reports on this device; they are not delivered until a confirmed sync or separate communication.
+            </p>
+            <button type="button" onClick={() => navigate('Emergency Mode')}
+              className="min-h-11 rounded-lg bg-red-800 px-4 font-bold text-white">Open Emergency Mode</button>
+          </div>
+          <label className="mt-2 inline-flex min-h-9 items-center gap-2">
+            <input type="checkbox" checked={automaticEmergency} onChange={event => toggleAutomaticEmergency(event.target.checked)} />
+            Automatically open Emergency Mode when the API becomes unavailable (only from Overview; active forms are preserved)
+          </label>
+        </section>
+      )}
       <div className="flex">
         <aside className={`${open ? 'block' : 'hidden'} fixed inset-x-0 top-16 z-10 border-b border-slate-200 bg-white p-3 lg:static lg:block lg:min-h-[calc(100vh-4rem)] lg:w-64 lg:border-b-0 lg:border-r`}>
           <nav className="space-y-1" aria-label="Main navigation">
@@ -280,12 +397,15 @@ export default function App() {
             <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-950">{page}</h1>
           </div>
           {page === 'Overview' && (
-            <button className="mb-5 min-h-14 rounded-lg bg-red-700 px-5 text-base font-bold text-white" onClick={() => navigate('Emergency Mode')}>
-              Open Offline Emergency Mode
-            </button>
+            <section aria-label="Quick actions" className="mb-5 flex flex-wrap gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <button className="min-h-12 rounded-lg bg-red-700 px-5 text-sm font-bold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-800" onClick={() => navigate('Emergency Mode')}>Emergency Mode · local SOS</button>
+              <button className="min-h-12 rounded-lg border border-slate-400 bg-white px-4 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-800" onClick={() => navigate('Citizen SOS')}>Report incident</button>
+              <button className="min-h-12 rounded-lg border border-slate-400 bg-white px-4 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-800" onClick={() => navigate('Live monitoring')}>View live hazard map</button>
+              <button className="min-h-12 rounded-lg border border-slate-400 bg-white px-4 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-800" onClick={() => navigate('Trusted contacts')}>Trusted contacts</button>
+            </section>
           )}
-          <Content page={page} area={area} setArea={setArea} selected={selected} setSelected={setSelected}
-            online={connection === 'online'} offlineReady={offlineReady} onPendingChange={updatePendingCount} />
+          <Content page={page} area={area} setArea={setArea}
+            online={connection === 'online'} offlineReady={offlineReady} pendingReports={pendingCount} onPendingChange={updatePendingCount} onNavigate={navigate} />
         </main>
       </div>
     </div>
