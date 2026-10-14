@@ -1,0 +1,57 @@
+# Environment files and credentials — commit only the documented template.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cert
+secrets/
+
+# Node.js / React / TypeScript dependencies and generated output.
+node_modules/
+apps/*/node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.npm/
+.pnpm-store/
+.pnpm-home/
+AppData/
+
+# Python virtual environments, caches, coverage, and packaging output.
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.pytype/
+
+# Local development databases and their SQLite side files.
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Generated logs, editor files, and operating-system metadata.
+*.log
+logs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local workspace scratch material. Keep source fixtures and documentation tracked.
+work/
