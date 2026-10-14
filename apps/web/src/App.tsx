@@ -5,6 +5,7 @@ import { IncidentCoordinator } from './components/IncidentCoordinator'
 import { LiveMonitoring } from './components/LiveMonitoring'
 import { SourceStatusPanel } from './components/SourceStatusPanel'
 import { DashboardSummary } from './components/DashboardSummary'
+import { FloodSimulation } from './components/FloodSimulation'
 import { arkgridApi, ApiError, apiBaseUrl } from './api/client'
 import { areas } from './data/demoData'
 import { EmergencyMode } from './emergency/EmergencyMode'
@@ -150,10 +151,10 @@ function Content({ page, area, setArea, online, offlineReady, pendingReports, on
  if (page === 'Citizen SOS') return <Sos />
  if (page === 'Incidents') return <IncidentCoordinator heading="Persisted incident queue" />
  if (page === 'Live monitoring') return <LiveMonitoring center={current.center} />
- if (page === 'Flood & satellite') return <div className="space-y-5"><Panel title="Flood and satellite data limits"><p className="text-sm text-slate-700">No live flood forecast, flood extent, or processed satellite imagery is connected. The Copernicus catalogue status may expose public product metadata only; it does not provide a rendered image or validated impact analysis.</p><p className="mt-2 text-sm text-slate-700">GloFAS product/licence/access requirements and CEMS activation workflows require additional validation. Do not treat source-page reachability as a hazard observation.</p></Panel><SourceStatusPanel /></div>
+ if (page === 'Flood & satellite') return <div className="space-y-5"><FloodSimulation online={online} /><SourceStatusPanel /></div>
  if (page === 'Rescue coordination') return <IncidentCoordinator heading="Rescue coordination and persisted incidents" />
  if (page === 'Data & system status') return <div className="space-y-5"><BackendStatus /><SourceStatusPanel /><Panel title="Data and safety boundaries"><p className="text-sm text-slate-700">USGS records are labelled external observations. Citizen SOS form entries are explicitly simulated; synchronized Emergency Mode reports are unverified citizen reports. Resources are simulated. The browser-online indicator is only a connectivity hint; offline reports remain locally stored until the user confirms manual upload and the backend acknowledges it. Neither SMS handoff nor this coordinator dispatches real responders.</p></Panel></div>
- return <div className="space-y-5"><DashboardSummary pendingReports={pendingReports} /><div className="grid gap-5 xl:grid-cols-[1.5fr_1fr]"><div className="space-y-5"><Panel title="Operational overview" action={<span className="text-xs text-slate-500">Prototype · no operational dispatch</span>}><p className="text-sm leading-6 text-slate-700">Review recent external observations alongside persisted, unverified incident records. Scores are transparent triage aids, not predictions; resource assignments are fictional and do not dispatch responders.</p></Panel><LiveMonitoring center={current.center} compact /><IncidentCoordinator heading="Recent persisted incidents" /></div><div className="space-y-5"><BackendStatus /><Panel title="Attention required"><p className="text-sm text-slate-600">Review new reports, stale/unavailable data, and queued SOS items. Verify source freshness, location, and incident details independently before any real-world decision.</p>{pendingReports > 0 && <button type="button" className="mt-3 min-h-11 rounded-lg border border-amber-500 bg-amber-50 px-4 text-sm font-bold text-amber-950" onClick={() => onNavigate('Emergency Mode')}>{pendingReports} local SOS report(s) not yet synchronized</button>}</Panel><Panel title="Scenario safeguards"><Simulated /><p className="mt-3 text-sm text-slate-600">Nepal is one historical demonstration area; custom map points are available. The priority score is an explainable rules aid, not a trained AI model and not a sole rescue decision basis.</p></Panel></div></div></div>
+ return <div className="space-y-5"><DashboardSummary pendingReports={pendingReports} /><div className="grid gap-5 xl:grid-cols-[1.5fr_1fr]"><div className="space-y-5"><Panel title="Operational overview" action={<span className="text-xs text-slate-500">Prototype · no operational dispatch</span>}><p className="text-sm leading-6 text-slate-700">Review recent external observations alongside persisted, unverified incident records. Scores are transparent triage aids, not predictions; resource assignments are fictional and do not dispatch responders.</p></Panel><LiveMonitoring center={current.center} compact /><IncidentCoordinator heading="Recent persisted incidents" /></div><div className="space-y-5"><BackendStatus /><Panel title="Flood-risk demonstration" action={<Simulated />}><p className="text-sm text-slate-700">A synthetic ML and route-scoring workflow is available for review. It is not a validated forecast and does not use live hydrology or real roads.</p><button type="button" className="mt-3 min-h-11 rounded-lg bg-slate-900 px-4 text-sm font-bold text-white" onClick={() => onNavigate('Flood & satellite')}>Open flood scenario</button></Panel><Panel title="Attention required"><p className="text-sm text-slate-600">Review new reports, stale/unavailable data, and queued SOS items. Verify source freshness, location, and incident details independently before any real-world decision.</p>{pendingReports > 0 && <button type="button" className="mt-3 min-h-11 rounded-lg border border-amber-500 bg-amber-50 px-4 text-sm font-bold text-amber-950" onClick={() => onNavigate('Emergency Mode')}>{pendingReports} local SOS report(s) not yet synchronized</button>}</Panel><Panel title="Scenario safeguards"><Simulated /><p className="mt-3 text-sm text-slate-600">Nepal is one historical demonstration area; custom map points are available. The priority score is an explainable rules aid, not a trained AI model and not a sole rescue decision basis.</p></Panel></div></div></div>
 }
 
 export default function App() {
@@ -332,11 +333,11 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-800">
-      <header className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2 lg:px-7">
+      <header className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-slate-800 bg-slate-950 px-4 py-2 text-white lg:px-7">
         <div className="flex items-center gap-3">
-          <button className="lg:hidden" onClick={() => setOpen(!open)} aria-label="Toggle navigation">{open ? <X /> : <Menu />}</button>
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-white"><Activity size={18} /></div>
-          <div><p className="font-semibold tracking-tight">ArkGrid</p><p className="text-[10px] font-medium uppercase tracking-wider text-slate-500">Disaster intelligence · demo</p></div>
+          <button className="text-white lg:hidden" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls="primary-navigation" aria-label="Toggle navigation">{open ? <X /> : <Menu />}</button>
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-700 text-white"><Activity size={18} /></div>
+          <div><p className="font-semibold tracking-tight">ArkGrid</p><p className="text-[10px] font-medium uppercase tracking-wider text-slate-300">Disaster intelligence · demo</p></div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <span role="status" aria-live="polite" className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold ${connection === 'offline' ? 'bg-red-100 text-red-900' : connection === 'reconnecting' ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-900'}`}>
@@ -349,7 +350,7 @@ export default function App() {
           <button className="min-h-10 rounded-lg bg-red-700 px-3 text-sm font-bold text-white" onClick={() => navigate('Emergency Mode')}>Emergency Mode</button>
           {installPrompt && !installed && <button className="min-h-10 rounded-lg border border-slate-400 px-3 text-sm font-semibold" onClick={() => void installApp()}>Install app</button>}
           {installed && <span className="text-xs font-medium text-slate-600">Installed</span>}
-          <span className="hidden items-center gap-2 text-xs text-slate-600 lg:flex"><span className="h-2 w-2 rounded-full bg-amber-400" />Demonstration environment</span>
+          <span className="hidden items-center gap-2 text-xs text-slate-200 lg:flex"><span className="h-2 w-2 rounded-full bg-amber-400" />Demonstration environment</span>
         </div>
       </header>
       <div className="border-b border-slate-200 bg-white px-4 py-2 text-xs text-slate-600 lg:px-7">
@@ -382,10 +383,10 @@ export default function App() {
         </section>
       )}
       <div className="flex">
-        <aside className={`${open ? 'block' : 'hidden'} fixed inset-x-0 top-16 z-10 border-b border-slate-200 bg-white p-3 lg:static lg:block lg:min-h-[calc(100vh-4rem)] lg:w-64 lg:border-b-0 lg:border-r`}>
-          <nav className="space-y-1" aria-label="Main navigation">
+        <aside className={`${open ? 'block' : 'hidden'} fixed inset-x-0 top-16 z-10 max-h-[calc(100dvh-4rem)] overflow-y-auto border-b border-slate-700 bg-slate-950 p-3 lg:static lg:block lg:min-h-[calc(100vh-4rem)] lg:max-h-none lg:w-64 lg:border-b-0 lg:border-r lg:border-slate-800`}>
+          <nav id="primary-navigation" className="space-y-1" aria-label="Main navigation">
             {navigation.map(([label, Icon]) => (
-              <button key={label} onClick={() => navigate(label)} className={`flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium ${page === label ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
+              <button key={label} onClick={() => navigate(label)} className={`flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300 ${page === label ? 'bg-cyan-700 text-white' : 'text-slate-200 hover:bg-slate-800'}`}>
                 <Icon size={17} />{label}
               </button>
             ))}

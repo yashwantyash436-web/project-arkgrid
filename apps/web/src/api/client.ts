@@ -1,6 +1,8 @@
 import type { EmergencyCategory, EmergencyReport } from '../emergency/types'
 import type {
   EarthquakeResponse,
+  FloodSimulationInput,
+  FloodSimulationResponse,
   Incident,
   PriorityAssessment,
   Resource,
@@ -141,6 +143,13 @@ export const arkgridApi = {
     return request<{ category: EmergencyCategory | null; score: number; model: string }>('/api/ml/category-suggestion', {
       method: 'POST',
       body: JSON.stringify({ text }),
+    })
+  },
+
+  floodDemoSimulation(input: FloodSimulationInput) {
+    return request<FloodSimulationResponse>('/api/flood/demo-simulation', {
+      method: 'POST',
+      body: JSON.stringify(input),
     })
   },
 

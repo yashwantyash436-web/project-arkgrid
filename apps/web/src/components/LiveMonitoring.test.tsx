@@ -20,16 +20,20 @@ vi.mock('./MapView', () => ({
     markers,
     earthquakes,
     showEarthquakes,
+    center,
+    zoom,
     onEarthquakeSelect,
     onDemoIncidentSelect,
   }: {
     markers: boolean
     earthquakes: Earthquake[]
     showEarthquakes: boolean
+    center: [number, number]
+    zoom: number
     onEarthquakeSelect: (event: Earthquake) => void
     onDemoIncidentSelect: (incident: { id: string; title: string; location: string; severity: string; description: string }) => void
   }) => (
-    <div>
+    <div data-testid="monitor-map-view" data-center={center.join(',')} data-zoom={zoom}>
       <p>Demo markers: {markers ? 'visible' : 'hidden'} · USGS markers: {showEarthquakes ? earthquakes.length : 0}</p>
       {showEarthquakes && earthquakes.map(event => (
         <button key={event.id} type="button" onClick={() => onEarthquakeSelect(event)}>Select map event {event.id}</button>
@@ -69,6 +73,11 @@ describe('live map and event list', () => {
     render(<LiveMonitoring center={[27.7, 85.3]} />)
 
     expect(await screen.findByText('Demo markers: hidden · USGS markers: 1')).toBeInTheDocument()
+    expect(screen.getByTestId('monitor-map-view')).toHaveAttribute('data-center', '18,0')
+    expect(screen.getByTestId('monitor-map-view')).toHaveAttribute('data-zoom', '2')
+    fireEvent.click(screen.getByRole('button', { name: 'Scenario region' }))
+    expect(screen.getByTestId('monitor-map-view')).toHaveAttribute('data-center', '27.7,85.3')
+    fireEvent.click(screen.getByRole('button', { name: 'Global overview' }))
     fireEvent.click(screen.getByLabelText(/Fictional demo incidents/))
     expect(screen.getByText('Demo markers: visible · USGS markers: 1')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Select demo map fixture' }))
@@ -77,6 +86,11 @@ describe('live map and event list', () => {
     fireEvent.click(screen.getByRole('button', { name: /Select to inspect the corresponding map marker/ }))
     expect(screen.getByRole('heading', { name: 'Selected USGS observation · M4.1' })).toBeInTheDocument()
     expect(screen.getAllByText(/18 km/)).not.toHaveLength(0)
+
+    fireEvent.change(screen.getByLabelText('Minimum magnitude'), { target: { value: '5' } })
+    expect(screen.getByText('Demo markers: visible · USGS markers: 0')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Selected USGS observation · M4.1' })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Minimum magnitude'), { target: { value: '0' } })
 
     fireEvent.click(screen.getByLabelText(/Fictional demo incidents/))
     expect(screen.getByText('Demo markers: hidden · USGS markers: 1')).toBeInTheDocument()

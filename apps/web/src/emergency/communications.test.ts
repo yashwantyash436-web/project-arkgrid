@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   createBackendSyncProvider,
   formatSmsMessage,
+  getSmsPlatform,
   isLikelyMultipartSms,
   mapSyncError,
   normalizePhoneNumber,
@@ -42,7 +43,7 @@ describe('SMS and synchronization providers', () => {
   })
 
   it('includes report identity, type, severity, location, time, and message in the SMS', () => {
-    const message = formatSmsMessage(report)
+    const message = formatSmsMessage(report, true)
 
     expect(message).toContain(report.id)
     expect(message).toContain('Critical Medical emergency')
@@ -50,8 +51,28 @@ describe('SMS and synchronization providers', () => {
     expect(message).toContain(report.createdAt)
     expect(message).toContain(report.message)
     expect(smsHandoffProvider.createHref('+14155550123', message)).toContain('sms:+14155550123?body=')
+    expect(smsHandoffProvider.createHref('+14155550123', message, 'ios')).toContain('sms:+14155550123&body=')
     expect(isLikelyMultipartSms('x'.repeat(161))).toBe(true)
     expect(isLikelyMultipartSms('x'.repeat(160))).toBe(false)
+  })
+
+  it('encodes Unicode without losing message text and omits location without consent', () => {
+    const message = formatSmsMessage({ ...report, message: 'Need help — सहायता' })
+    const uri = smsHandoffProvider.createHref('+14155550123', message)
+    const encodedBody = uri.slice(uri.indexOf('body=') + 'body='.length)
+
+    expect(decodeURIComponent(encodedBody)).toContain('Need help — सहायता')
+    expect(message).toContain('Location omitted')
+    expect(message).not.toContain('27.71720')
+    expect(message).not.toContain('OpenStreetMap')
+  })
+
+  it('selects the iOS URI form only for Apple mobile user agents', () => {
+    expect(getSmsPlatform('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)')).toBe('ios')
+    expect(getSmsPlatform('Mozilla/5.0 (Linux; Android 15)')).toBe('standard')
+    expect(getSmsPlatform('Mozilla/5.0 (Windows NT 10.0; Win64; x64)')).toBe('standard')
+    expect(getSmsPlatform('Mozilla/5.0 (Macintosh; Intel Mac OS X)', 'MacIntel')).toBe('standard')
+    expect(getSmsPlatform('Mozilla/5.0 (Macintosh; Intel Mac OS X)', 'MacIntel', 5)).toBe('ios')
   })
 
   it('uses the client report ID as the backend idempotency key', async () => {

@@ -64,6 +64,9 @@ function normalizeSettings(value: Record<string, unknown> | undefined): Emergenc
 
   return {
     id: 'settings',
+    emergencyRegion: typeof value?.emergencyRegion === 'string'
+      ? value.emergencyRegion.trim().slice(0, 80)
+      : '',
     trustedContacts,
     lastSyncAt: typeof value?.lastSyncAt === 'string' ? value.lastSyncAt : null,
     recentLocation,

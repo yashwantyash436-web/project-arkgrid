@@ -6,6 +6,8 @@
 body { margin: 0; min-width: 320px; }
 button, input, select, textarea { font: inherit; }
 button, a, input, select, textarea { transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease; }
-:focus-visible { outline: 3px solid #4f46e5; outline-offset: 2px; }
+:focus-visible { outline: 3px solid #0891b2; outline-offset: 2px; }
+button:not(:disabled), a { cursor: pointer; }
+input[type="checkbox"], input[type="radio"] { accent-color: #087f8c; }
 .leaflet-container { height: 100%; width: 100%; background: #dfe7eb; }
 .leaflet-control-attribution { font-size: 10px; }

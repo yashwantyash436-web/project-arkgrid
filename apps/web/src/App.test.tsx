@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import type { Incident, ResourceResponse } from './api/types'
@@ -22,6 +22,31 @@ const { api } = vi.hoisted(() => ({
     resources: vi.fn(async (): Promise<ResourceResponse> => ({ items: [], total: 0, connected_real_resources: 0, notice: 'fictional demo resources' })),
     sourceStatuses: vi.fn(async () => ({ items: [], checked_at: '2026-10-14T00:00:00Z' })),
     createIncident: vi.fn(async () => ({ id: 'incident-demo-1' })),
+    floodDemoSimulation: vi.fn(async () => ({
+      scenario_id: 'koshi-synthetic-demo',
+      data_mode: 'DEMO SIMULATION' as const,
+      risk_class: 'low' as const,
+      horizon_hours: 0 as const,
+      inputs: { rainfall_mm: 80, water_level_m: 0.5, river_level_m: 1, terrain_elevation_m: 6, water_level_trend_m_per_hour: 0.3 },
+      cells: [{ id: 'cell-0-0', latitude: 26.75, longitude: 87.2, elevation_m: 8, risk_score: 0.2, risk_class: 'low' as const }],
+      timeline: [{ hour: 0 as const, high_risk_cells: 0, moderate_or_high_cells: 0 }, { hour: 1 as const, high_risk_cells: 0, moderate_or_high_cells: 2 }, { hour: 3 as const, high_risk_cells: 1, moderate_or_high_cells: 4 }, { hour: 6 as const, high_risk_cells: 2, moderate_or_high_cells: 8 }],
+      routes: [
+        { id: 'short-lowbank', label: 'Short east-bank demo road', geometry: [[26.735, 87.19], [26.735, 87.37]] as [number, number][], distance_km: 4.2, mean_exposure_score: 0.2, high_risk_segments: 0, illustrative_route_score: 0.45 },
+        { id: 'raised-detour', label: 'Raised-ground demo detour', geometry: [[26.79, 87.19], [26.79, 87.37]] as [number, number][], distance_km: 5.8, mean_exposure_score: 0.1, high_risk_segments: 0, illustrative_route_score: 0.45 },
+      ],
+      selected_route_id: 'short-lowbank',
+      route_warning: null,
+      model: {
+        version: 'arkgrid-flood-logistic-synthetic-v1',
+        algorithm: 'class-weighted logistic regression',
+        score_kind: 'uncalibrated synthetic-risk score; not a flood probability',
+        synthetic_training_rows: 3000,
+        synthetic_held_out_rows: 750,
+        held_out_synthetic_metrics: { precision: 1, recall: 0.95, f1: 0.97 },
+      },
+      source: 'Synthetic test scenario',
+      limitations: ['Synthetic demonstration—not a validated real-world flood forecast.'],
+    })),
   },
 }))
 
@@ -66,6 +91,7 @@ beforeEach(() => {
   api.resources.mockImplementation(async () => ({ items: [], total: 0, connected_real_resources: 0, notice: 'fictional demo resources' }))
   api.sourceStatuses.mockImplementation(async () => ({ items: [], checked_at: '2026-10-14T00:00:00Z' }))
   api.createIncident.mockImplementation(async () => ({ id: 'incident-demo-1' }))
+  api.floodDemoSimulation.mockClear()
   window.localStorage.removeItem('arkgrid-auto-emergency')
   window.localStorage.removeItem('arkgrid-last-api-success')
 })
@@ -101,6 +127,36 @@ describe('ArkGrid frontend', () => {
       error: null,
       disclaimer: 'Observations only',
     })
+  })
+
+  it('loads a clearly labelled synthetic flood demo and requests each selected timeline step', async () => {
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Flood & satellite' }))
+
+    expect(await screen.findByText(/Selected illustrative route:/)).toBeInTheDocument()
+    expect(screen.getByText(/Synthetic demonstration—not a validated real-world flood forecast/)).toBeInTheDocument()
+    expect(screen.getByText(/Real-data mode · not available/)).toBeInTheDocument()
+    expect(screen.getByText('Short east-bank demo road', { selector: 'strong' })).toBeInTheDocument()
+
+    fireEvent.change(screen.getByRole('slider', { name: 'Forecast timeline' }), { target: { value: '3' } })
+    await waitFor(() => expect(api.floodDemoSimulation).toHaveBeenLastCalledWith({
+      rainfallMm: 80,
+      waterLevelM: 0.5,
+      riverLevelM: 1,
+      terrainElevationM: 6,
+      waterLevelTrendMPerHour: 0.3,
+      horizonHours: 6,
+    }))
+  })
+
+  it('does not pretend the flood model is available offline when it is not cached', async () => {
+    render(<App />)
+    fireEvent(window, new Event('offline'))
+    fireEvent.click(screen.getByRole('button', { name: 'Flood & satellite' }))
+
+    expect(await screen.findByText(/Offline: the flood model and scenario are not cached/)).toBeInTheDocument()
+    expect(api.floodDemoSimulation).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Run synthetic scenario' })).toBeDisabled()
   })
 
   it('loads persisted incidents and filters by location', async () => {

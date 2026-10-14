@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 from fastapi.testclient import TestClient
 
-from app.main import SOURCE_PAGES, connect, create_app, initialize_database
+from app.main import SOURCE_PAGES, connect, create_app, initialize_database, normalize_earthquakes
 from app.priority import calculate_priority
 
 
@@ -100,6 +100,37 @@ def test_health_scenarios_sources_and_earthquake_normalization(tmp_path):
         )
 
 
+def test_earthquake_normalization_keeps_global_coordinates_and_ignores_invalid_values():
+    payload = feed_payload()
+    payload["features"].extend([
+        {
+            "type": "Feature",
+            "id": f"event-{name}",
+            "properties": {"mag": magnitude, "place": name, "time": 1791950400000},
+            "geometry": {"type": "Point", "coordinates": [longitude, latitude, None]},
+        }
+        for name, longitude, latitude, magnitude in (
+            ("Asia", 85.3, 27.7, 4.1),
+            ("Africa", 3.4, 6.5, "invalid magnitude"),
+            ("Europe", -0.1, 51.5, 3.2),
+            ("Oceania", 151.2, -33.8, 2.5),
+        )
+    ])
+    payload["features"].append({
+        "type": "Feature",
+        "id": "invalid-latitude",
+        "properties": {"mag": 5, "time": 1791950400000},
+        "geometry": {"type": "Point", "coordinates": [0, 91]},
+    })
+
+    items = normalize_earthquakes(payload)
+    by_place = {item["place"]: item for item in items}
+    assert {"Asia", "Africa", "Europe", "Oceania", "10 km test region"} <= set(by_place)
+    assert by_place["Africa"]["magnitude"] is None
+    assert all(item["latitude"] <= 90 and item["latitude"] >= -90 for item in items)
+    assert "invalid-latitude" not in {item["id"] for item in items}
+
+
 def test_demo_ml_category_suggestion_and_validation(tmp_path):
     with create_test_client(tmp_path) as client:
         response = client.post(
@@ -131,6 +162,53 @@ def test_demo_ml_category_suggestion_and_validation(tmp_path):
         assert unknown.json()["score"] == 0
 
         assert client.post("/api/ml/category-suggestion", json={"text": "help"}).status_code == 422
+
+
+def test_flood_demo_model_is_reproducible_validated_and_never_claims_real_probability(tmp_path):
+    with create_test_client(tmp_path) as client:
+        payload = {
+            "rainfallMm": 80,
+            "waterLevelM": 0.5,
+            "riverLevelM": 1,
+            "terrainElevationM": 6,
+            "waterLevelTrendMPerHour": 0.3,
+            "horizonHours": 0,
+        }
+        initial = client.post("/api/flood/demo-simulation", json=payload)
+        assert initial.status_code == 200
+        body = initial.json()
+        assert body["data_mode"] == "DEMO SIMULATION"
+        assert body["scenario_id"] == "koshi-synthetic-demo"
+        assert body["model"]["algorithm"] == "class-weighted logistic regression"
+        assert body["model"]["score_kind"] == "uncalibrated synthetic-risk score; not a flood probability"
+        assert len(body["cells"]) == 12
+        assert body["cells"][0]["risk_class"] in {"low", "moderate", "high"}
+        assert "Synthetic demonstration—not a validated real-world flood forecast." in body["limitations"]
+        assert client.post("/api/flood/demo-simulation", json=payload).json() == body
+
+        later = client.post(
+            "/api/flood/demo-simulation",
+            json={**payload, "horizonHours": 6},
+        ).json()
+        assert body["selected_route_id"] == "short-lowbank"
+        assert later["selected_route_id"] == "raised-detour"
+        assert later["cells"] != body["cells"]
+
+        extreme = client.post(
+            "/api/flood/demo-simulation",
+            json={
+                **payload,
+                "rainfallMm": 500,
+                "waterLevelM": 20,
+                "riverLevelM": 20,
+                "terrainElevationM": 0,
+                "waterLevelTrendMPerHour": 5,
+                "horizonHours": 6,
+            },
+        ).json()
+        assert extreme["route_warning"] is not None
+        assert client.post("/api/flood/demo-simulation", json={**payload, "rainfallMm": 501}).status_code == 422
+        assert client.post("/api/flood/demo-simulation", json={**payload, "horizonHours": 2}).status_code == 422
 
 
 def test_incident_validation_idempotency_and_persistence(tmp_path):

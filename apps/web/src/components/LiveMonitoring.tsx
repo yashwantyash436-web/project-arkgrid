@@ -11,6 +11,7 @@ export function LiveMonitoring({ center, compact = false }: { center: [number, n
   const [error, setError] = useState('')
   const [showEarthquakes, setShowEarthquakes] = useState(true)
   const [showDemoIncidents, setShowDemoIncidents] = useState(false)
+  const [globalOverview, setGlobalOverview] = useState(true)
   const [minimumMagnitude, setMinimumMagnitude] = useState('0')
   const [timeWindowHours, setTimeWindowHours] = useState('24')
   const [placeFilter, setPlaceFilter] = useState('')
@@ -66,7 +67,17 @@ export function LiveMonitoring({ center, compact = false }: { center: [number, n
       {loading && !data && <p role="status" className="rounded-lg bg-white p-4 text-sm text-slate-700">Loading earthquake observations from the backend…</p>}
 
       <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4" aria-label="Earthquake map">
-        <div className="flex flex-wrap gap-4 text-sm">
+        <div className="flex flex-wrap items-center gap-4 text-sm">
+          <div className="flex gap-2" role="group" aria-label="Map extent">
+            <button type="button" aria-pressed={globalOverview} onClick={() => setGlobalOverview(true)}
+              className={`min-h-10 rounded-lg border px-3 font-semibold ${globalOverview ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-400 bg-white text-slate-900'}`}>
+              Global overview
+            </button>
+            <button type="button" aria-pressed={!globalOverview} onClick={() => setGlobalOverview(false)}
+              className={`min-h-10 rounded-lg border px-3 font-semibold ${!globalOverview ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-400 bg-white text-slate-900'}`}>
+              Scenario region
+            </button>
+          </div>
           <label className="flex min-h-11 items-center gap-2"><input type="checkbox" checked={showEarthquakes} onChange={event => {
             setShowEarthquakes(event.target.checked)
             if (!event.target.checked) setSelectedEarthquakeId('')
@@ -77,7 +88,7 @@ export function LiveMonitoring({ center, compact = false }: { center: [number, n
           }} /> Fictional demo incidents ({showDemoIncidents ? demoIncidents.length : 0} visible)</label>
         </div>
         <div className={compact ? 'h-[280px]' : 'h-[340px]'}>
-          <MapView center={center} zoom={5} markers={showDemoIncidents} earthquakes={events} showEarthquakes={showEarthquakes}
+          <MapView center={globalOverview ? [18, 0] : center} zoom={globalOverview ? 2 : 5} markers={showDemoIncidents} earthquakes={events} showEarthquakes={showEarthquakes}
             selectedEarthquakeId={selectedEarthquakeId}
             onEarthquakeSelect={event => setSelectedEarthquakeId(event.id)}
             selectedDemoIncidentId={selectedDemoIncidentId}

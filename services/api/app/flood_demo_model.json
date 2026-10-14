@@ -1,0 +1,29 @@
+{
+  "model_version": "arkgrid-flood-logistic-synthetic-v1",
+  "algorithm": "class-weighted logistic regression",
+  "training_data": "Deterministic synthetic feature combinations and threshold-generated labels; not observed flood data.",
+  "features": [
+    "bias",
+    "rainfall_mm / 200",
+    "forecast_water_level_m / 5",
+    "river_level_m / 8",
+    "terrain_elevation_m / 20",
+    "horizon_hours / 6"
+  ],
+  "synthetic_training_rows": 3840,
+  "synthetic_held_out_rows": 960,
+  "held_out_synthetic_metrics": {
+    "precision": 1.0,
+    "recall": 0.9532710280373832,
+    "f1": 0.9760765550239235
+  },
+  "weights": [
+    -2.5296719744769733,
+    3.2657707721739735,
+    2.109271101753556,
+    2.858727074409666,
+    -3.3198660700564986,
+    0.9577480187377662
+  ],
+  "is_probability_calibrated": false
+}

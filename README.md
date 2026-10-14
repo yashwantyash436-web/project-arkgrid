@@ -11,7 +11,7 @@ ArkGrid is a geospatial disaster-intelligence prototype for observations, citize
 ## Implemented demo capabilities
 
 - React, TypeScript, Vite, Tailwind, Leaflet, and an installable PWA shell.
-- Local SOS queue and trusted-contact storage in IndexedDB, with deliberate SMS-composer/copy handoff. The UI never claims SMS delivery or automatic synchronization.
+- Local SOS queue and trusted-contact storage in IndexedDB, with user-initiated SMS URI/copy handoff. The browser cannot verify composer launch or delivery; coordinates/map links are excluded unless the user opts in.
 - Named trusted contacts (name, relationship, E.164 phone, optional note), stored in this browser profile only. Existing saved phone-only entries are retained and presented as editable legacy contacts.
 - Optional latest-only recent location, recorded only after an explicit location action. There is no background or continuous location tracking.
 - Independent browser connectivity hints and API health checks (initially, after online/focus events, and every 30 seconds while visible), plus a persistent last successful health-check time. Optional automatic Emergency Mode navigation is limited to the Overview so an active form is not interrupted.
@@ -21,11 +21,13 @@ ArkGrid is a geospatial disaster-intelligence prototype for observations, citize
 - Idempotent manual synchronization of locally saved emergency reports using their client report ID.
 - The local queue retains sync attempt counts and the server incident ID after acknowledgement; retries remain keyed to the stable client report ID.
 - Recent USGS all-day earthquake observations, fetched and cached by the API, with freshness/error status and map markers.
+- Live monitoring offers a global map extent by default and a separate demo-region view; the all-day feed is not filtered to the United States.
+- A FastAPI-backed deterministic logistic-regression flood simulation with persisted model metadata, timeline cells, and synthetic candidate road paths. Every model input, grid, and route is demo-only, and the displayed score is not a probability.
 - Deterministic, explainable rules-based incident priority. A configured coordinator token is required to record score overrides.
 - In Emergency Mode, users can opt in to a demo Naive Bayes text classifier that suggests report categories from a small synthetic training set through `POST /api/ml/category-suggestion`. The user reviews/applies suggestions; its model score is not calibrated and it does not verify reports or determine priority.
 - External-source reachability/status cards. Copernicus Data Space is probed for public catalogue **metadata only**; no imagery is downloaded or analyzed.
 
-Flood forecasts/extents, operational Copernicus Emergency Management activations, rendered satellite imagery, real responder resources, dispatch, authenticated general coordinator roles, and production deployment are **not implemented**. CEMS/GloFAS page reachability is not hazard data. The Citizen SOS form creates clearly labelled simulation records. Emergency Mode reports synchronized only after an explicit upload confirmation are classified as unverified `citizen_report` records; they are not independently confirmed or dispatched. All resources are fictional. Do not use this demo for real emergencies or enter real personal data.
+Real flood forecasts/extents, operational Copernicus Emergency Management activations, rendered satellite imagery, real responder resources, verified evacuation routes, city geocoding, nearby hazard search, authenticated general coordinator roles, and production deployment are **not implemented**. CEMS/GloFAS page reachability is not hazard data. The flood panel explicitly separates missing real-data mode from its synthetic demonstration. The Citizen SOS form creates clearly labelled simulation records. Emergency Mode reports synchronized only after an explicit upload confirmation are classified as unverified `citizen_report` records; they are not independently confirmed or dispatched. All resources and flood routes are fictional. Do not use this demo for real emergencies or enter real personal data.
 
 ## Requirements
 
@@ -49,6 +51,15 @@ Start the API from the repository root:
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir services/api --reload --host 127.0.0.1 --port 8000
 ```
+
+The model artifact is included at `services/api/app/flood_demo_model.json`. To reproducibly regenerate it using the synthetic training set:
+
+```powershell
+$env:PYTHONPATH = "services\api"
+.\.venv\Scripts\python.exe services\api\scripts\train_flood_demo_model.py
+```
+
+The training script reports held-out precision/recall/F1 against synthetic labels only. These numbers do not validate real-world flood prediction.
 
 Optional API environment variables:
 
@@ -106,9 +117,21 @@ ArkGrid shows two separate statuses: browser connectivity events/`navigator.onLi
 
 Open **Trusted contacts** in the main navigation. Add a name, relationship, phone number in international E.164 format (including country code, for example `+14155550123`), and optional note. Contacts are stored locally in IndexedDB only; there is no user account, server-side contact sync, authentication, or recovery/export feature. They may be lost if browser storage is cleared and are accessible to someone with access to the browser profile. Existing phone-only entries are retained by the storage migration as legacy contacts; edit their name/relationship when convenient.
 
+You can save a country/region label in local settings for your own reference. It does not select, validate, or recommend an emergency number. Verify official local numbers independently and add an explicitly chosen number as a trusted contact; ArkGrid does not apply a calling code to a phone number or hardcode a universal emergency number.
+
 Select **Enable Location / refresh** to explicitly request a browser location fix. Review its coordinates, reported accuracy and capture timestamp. The app retains only the latest explicitly captured sample in local IndexedDB; it does not track continuously or while closed. A saved sample older than 30 minutes is labelled stale. You can delete this sample separately from SOS reports. To share a location, open a saved report, select each intended trusted contact, review the exact recipient-specific SMS preview and choose **Prepare SMS**. Each action opens a device SMS handoff; the user must still send the message in the messaging app. If the browser/device does not handle `sms:`, use Copy message and another channel. Neither route confirms delivery. ArkGrid does not invent emergency numbers.
 
+Location details, coordinates, and map links are excluded from the SMS preview unless **Include location details…** is explicitly selected. The app requires an international `+` country-code number and does not guess a country code or infer a universal emergency number. iOS uses its SMS body separator; other platforms use the standard query form. Desktop SMS handlers vary. The app reports a handoff request, a user's unverified “I sent it” statement, or a user-reported cancellation; it has no carrier receipt and cannot determine whether a messaging composer opened. No SMS is automatically retried. Reliable delivery requires a native wrapper with device permissions or an authenticated telecom/messaging service and delivery receipts; neither is configured here.
+
+To test handoff on a real phone, build and preview the production PWA, install/open it in the target browser, add a test contact you control in international format, create a fictional report, and inspect the entire message and recipient. Test with a non-emergency test message only. Tap **Prepare SMS**, then inspect the native composer and press Send yourself. Return to ArkGrid and record what you observed; the UI still cannot verify delivery. Do not test by messaging an emergency number.
+
 Standard OpenStreetMap raster tiles are retained to avoid introducing a paid tile service or credentials. They do not provide ArkGrid with a reliable English-label switch; text embedded in map tiles may use another local language. ArkGrid’s navigation, controls, event details, legend and other UI text are English. Tile attribution is visible, and tiles are not cached for offline use.
+
+## Flood simulation and route demo
+
+Open **Flood & satellite**. Adjust synthetic rainfall (mm), water level (m), river level (m), terrain baseline (m), water-level trend (m/hour), and the Now/+1/+3/+6 hour timeline. The backend validates bounds and runs a class-weighted logistic-regression model trained by `services/api/scripts/train_flood_demo_model.py`; the model and metrics metadata are in `services/api/app/flood_demo_model.json`. Training labels and the twelve-cell scenario are deterministic synthetic fixtures. The output is an uncalibrated synthetic risk score, not a probability or validated prediction. Cells are not flood polygons, and there are no calculated arrival times.
+
+The two displayed roads are a deterministic synthetic graph with invented geometry. Route scoring combines its synthetic cell scores with a fixed illustrative distance penalty; route length is synthetic, no drive time is returned, and no candidate is safe or suitable for evacuation. The result changes with the simulated horizon to demonstrate route evaluation. Real-data mode is unavailable because ArkGrid does not connect rainfall observations, river gauges, an elevation raster, validated flood boundaries, or an operational road-routing graph. The simulation currently calls the API and is not available offline; it is not silently substituted with cached live data.
 
 ## API summary
 
@@ -121,6 +144,8 @@ Standard OpenStreetMap raster tiles are retained to avoid introducing a paid til
 - `POST /api/incidents/{id}/assign`
 - `GET /api/sources/status`
 - `GET /api/hazards/earthquakes` (also available at `/api/earthquakes`)
+- `POST /api/flood/demo-simulation` (bounded synthetic inputs only)
+- `POST /api/ml/category-suggestion` (separate synthetic text-classifier demo)
 
 The OpenAPI page is available at `http://127.0.0.1:8000/docs` when the API is running. Incident/resource writes are suitable for a local demo only and must not be exposed as an operational service without authentication, authorization, rate limiting, audit/security review, privacy/retention policies, and deployment hardening.
 
@@ -141,11 +166,13 @@ Backend tests use mocked provider responses. Frontend UI tests mock API response
 ## Operational safety boundaries
 
 - USGS records are external observations, not predictions. The API has an eight-second request timeout and a 60-second in-memory successful-response cache; cached data is marked stale after refresh failure.
+- The monitored USGS URL is the global `all_day.geojson` feed; markers and the event list share the same client-side time, magnitude, and place filters. Global monitoring opens at a world extent; the other option is the existing demo region, not a searched city.
 - CDSE catalogue metadata is not satellite imagery. CEMS/GloFAS page probes do not confirm operational data products.
 - Map clicks select a single point, not a polygon AOI. OpenStreetMap attribution is included; third-party map tiles and API responses are not cached offline.
 - Emergency Mode's browser-online indicator is only a hint. Sync is manual, requires a confirmation before report details/location leave the device, and retains the local record on failure. A successful backend response means persistence in this local demo database only; the report remains unverified.
 - Local trusted contacts and recent location have no server authentication or cross-device backup. Do not store real sensitive information in this prototype.
-- SMS handoff requires a user action in compatible messaging software and working cellular SMS service. Asking the OS to open a composer/copying content does not prove sending or delivery.
+- SMS handoff requires a user action in compatible messaging software and working cellular SMS service. A browser cannot confirm composer launch, cancellation, sending, or delivery; `user_marked_attempted` is only the user's report and no delivery receipt integration exists.
+- Flood model training/held-out metrics compare against synthetic labels only; no performance claim transfers to real-world flood forecasting. The flood demo, map cells, and routes are not emergency, hydrologic, or navigation guidance.
 - Resources are fictional demo fixtures. Assignment is not a dispatch. Priority is a transparent rules aid, not a trained AI model or the sole basis for rescue decisions.
 - Bluetooth relay is unsupported.
 

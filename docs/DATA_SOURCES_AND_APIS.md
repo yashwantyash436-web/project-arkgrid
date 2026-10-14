@@ -17,6 +17,28 @@ Use provider data through backend adapters, retain provenance, cache responsibly
 | Geocoding provider (TBD) | Location search | Select only after rate, attribution, privacy, and hosting use are known. | Do not send personal SOS narrative/contact data to a geocoder. Cache neutral search results. |
 | Published Nepal flood sources (TBD) | Historical scenario | Name the event, publication, author, date, licence, geometry, and transformation before import. | No uncited “Nepal flood” data; all scenario material is historical or simulated. |
 
+## Integration audit in this repository
+
+This table describes the requests made by the current code, not the full capabilities of the named organizations. A reachable information page is not evidence of usable hazard observations.
+
+| Source | Request actually made | Credentials / coverage / cadence | Returned content and current status |
+| --- | --- | --- | --- |
+| USGS earthquakes | Backend GET `https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson`; global past-day GeoJSON observations. | No credential. USGS feed guidance says feeds update about once per minute. Cache duration in ArkGrid is 60 seconds. | Features are normalized from GeoJSON; provider IDs, origin time, coordinates, magnitude, depth, place and original URL are retained. No USGS request was made as part of this code-change test run; backend tests use fixtures. |
+| Copernicus Data Space | Backend GET to `https://catalogue.dataspace.copernicus.eu/odata/v1/Products` with a Sentinel-2 collection filter, newest-first order, `$top=1`, and metadata-only `$select=Id,Name,ContentDate`. | The current catalogue metadata request is unauthenticated. Product download/processing needs account/token credentials and quota/terms review. The query is global catalogue metadata, not an AOI-specific hazard product. Product refresh schedule is not guaranteed by this request. | At most one newest product metadata record. `data_available` remains false because imagery is not retrieved or analyzed. Current build does not connect credentials. |
+| CEMS Emergency Mapping | Backend GET to `https://emergency.copernicus.eu/` via a page reachability probe. | Page probe requires no credential; operational activations are restricted to authorized users. Global emergency mapping does not mean a product exists for a selected location. | Landing-page status only. It does not retrieve a map, activation, flood extent, or machine-readable hazard product. |
+| GloFAS | Backend GET to `https://global-flood.emergency.copernicus.eu/` via a page reachability probe. | No credential for the page probe. Forecast product access, licence, cadence, resolution and geographic/time coverage are not verified by this integration. | Landing-page status only; no forecast or gauge data. |
+| OpenStreetMap tiles | Browser requests `https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png`. | No ArkGrid key. Public tile service usage policy and OSM attribution apply; not intended for unrestricted high-volume production. | Raster basemap only. Label language is determined by tile rendering and may not be English. Tile requests are not cached for offline mode. |
+
+No geocoder, precipitation product, river gauge, elevation raster, flood observation/extent, GloFAS feed, or operational routing provider is connected. No external source is used by the synthetic flood model. Before relying on any source, re-check its current documentation, licence, quotas, terms, and returned payload.
+
+The earthquake map's **Global overview** uses the existing all-day global feed; **Scenario region** returns to the configured Nepal demo extent. This is a viewport change, not a query filter. City search, global population-centre data, nearby-distance search, and marker clustering are not currently provided.
+
+## Synthetic flood model and route output
+
+`POST /api/flood/demo-simulation` is the only flood inference endpoint. It accepts bounded rainfall/water/river/elevation/trend values and one of four lead times. The values and 12-cell coordinates/elevations are synthetic. A class-weighted logistic regression is trained and persisted locally by `services/api/scripts/train_flood_demo_model.py`; the train and held-out labels are generated from a deterministic equation. The returned `risk_score` is explicitly uncalibrated and must not be called a probability. Synthetic held-out precision/recall/F1 report only agreement with generated labels.
+
+The route graph is also a deterministic invented fixture. It ranks two candidate polylines using their synthetic cell scores and an illustrative distance penalty. Distances are synthetic, travel time is not estimated, and output is not verified route guidance. No actual DEM, hydrography, roads, settlements, buildings, or observed/forecast water extent is included. The endpoint and UI emit warnings when both demo candidates intersect higher-risk cells; this does not establish that either route is safe.
+
 ## Data-access design
 
 ```text

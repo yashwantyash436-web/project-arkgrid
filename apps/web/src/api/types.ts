@@ -66,6 +66,59 @@ export type EarthquakeResponse = {
   disclaimer: string
 }
 
+export type FloodSimulationInput = {
+  rainfallMm: number
+  waterLevelM: number
+  riverLevelM: number
+  terrainElevationM: number
+  waterLevelTrendMPerHour: number
+  horizonHours: 0 | 1 | 3 | 6
+}
+
+export type FloodSimulationResponse = {
+  scenario_id: string
+  data_mode: 'DEMO SIMULATION'
+  risk_class: 'low' | 'moderate' | 'high'
+  horizon_hours: 0 | 1 | 3 | 6
+  inputs: {
+    rainfall_mm: number
+    water_level_m: number
+    river_level_m: number
+    terrain_elevation_m: number
+    water_level_trend_m_per_hour: number
+  }
+  cells: {
+    id: string
+    latitude: number
+    longitude: number
+    elevation_m: number
+    risk_score: number
+    risk_class: 'low' | 'moderate' | 'high'
+  }[]
+  timeline: { hour: 0 | 1 | 3 | 6; high_risk_cells: number; moderate_or_high_cells: number }[]
+  routes: {
+    id: string
+    label: string
+    geometry: [number, number][]
+    distance_km: number
+    mean_exposure_score: number
+    high_risk_segments: number
+    illustrative_route_score: number
+  }[]
+  selected_route_id: string | null
+  route_warning: string | null
+  model: {
+    version: string
+    algorithm: string
+    score_kind: string
+    synthetic_training_rows: number
+    synthetic_held_out_rows: number
+    held_out_synthetic_metrics: { precision: number; recall: number; f1: number }
+  }
+  source: string
+  limitations: string[]
+}
+
 export type Resource = {
   id: string
   name: string

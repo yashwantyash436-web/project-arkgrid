@@ -7,7 +7,7 @@ import type { EmergencyReport, EmergencySettings } from './types'
 const { state } = vi.hoisted(() => ({
   state: {
     reports: [] as EmergencyReport[],
-    settings: { id: 'settings', trustedContacts: [], lastSyncAt: null, recentLocation: null } as EmergencySettings,
+    settings: { id: 'settings', emergencyRegion: '', trustedContacts: [], lastSyncAt: null, recentLocation: null } as EmergencySettings,
     sync: vi.fn(async () => ({ serverId: 'incident-server-1', synchronizedAt: '2026-10-14T00:00:00Z' })),
     suggestCategory: vi.fn(async () => ({ category: 'Rescue' as const, score: 0.84, model: 'demo_multinomial_naive_bayes' })),
   },
@@ -50,7 +50,7 @@ afterEach(() => {
 
 beforeEach(() => {
   state.reports = []
-  state.settings = { id: 'settings', trustedContacts: [], lastSyncAt: null, recentLocation: null }
+  state.settings = { id: 'settings', emergencyRegion: '', trustedContacts: [], lastSyncAt: null, recentLocation: null }
   state.sync.mockClear()
   state.suggestCategory.mockClear()
   vi.stubGlobal('confirm', vi.fn(() => true))
@@ -97,6 +97,19 @@ describe('offline emergency mode', () => {
     expect(screen.getByText(/Ready to synchronize with the configured backend/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Back to queue' }))
     expect(screen.getByText(/Manual sync first checks backend health/)).toBeInTheDocument()
+  })
+
+  it('stores the user-entered emergency region without suggesting a local number', async () => {
+    openEmergencyMode()
+    await screen.findByRole('button', { name: /Trusted contacts/ })
+    fireEvent.click(screen.getByRole('button', { name: 'Trusted contacts' }))
+    fireEvent.change(screen.getByLabelText(/Your country \/ region/), {
+      target: { value: 'New Zealand' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save region' }))
+
+    await waitFor(() => expect(state.settings.emergencyRegion).toBe('New Zealand'))
+    expect(screen.getByText(/does not look up or recommend an emergency number/)).toBeInTheDocument()
   })
 
   it('captures device coordinates with the browser-reported accuracy and timestamp', async () => {
@@ -203,17 +216,25 @@ describe('offline emergency mode', () => {
     await screen.findByRole('heading', { name: 'Review saved report' })
 
     fireEvent.click(screen.getByRole('checkbox', { name: /Alex/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Include location details, coordinates and map link/ }))
     const smsLink = screen.getByRole('link', { name: /Prepare SMS for Alex/ })
     expect(smsLink).toHaveAttribute('href', expect.stringContaining('sms:+14155550123'))
     expect((screen.getByLabelText('SMS message preview for Alex') as HTMLTextAreaElement).value).toContain('ARKGRID SOS')
     expect((screen.getByLabelText('SMS message preview for Alex') as HTMLTextAreaElement).value).toContain('https://www.openstreetmap.org')
-    expect(screen.getByText(/NOT YET DELIVERED/)).toBeInTheDocument()
+    expect(screen.getByText(/Saved locally on this device/)).toBeInTheDocument()
     expect(screen.queryByText(/SMS was delivered/i)).not.toBeInTheDocument()
 
     smsLink.addEventListener('click', event => event.preventDefault())
     fireEvent.click(smsLink)
-    await screen.findByRole('button', { name: 'I attempted to send it' })
-    fireEvent.click(screen.getByRole('button', { name: 'I attempted to send it' }))
+    await waitFor(() => expect(state.reports[0].transmissionStatus).toBe('handoff_requested'))
+    expect(screen.getByText(/whether a composer opened and whether a message was sent are unknown/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'I cancelled / no SMS app opened' }))
+    await waitFor(() => expect(state.reports[0].transmissionStatus).toBe('handoff_failed'))
+    expect(screen.getByText(/SMS handoff was cancelled or unavailable/)).toBeInTheDocument()
+
+    fireEvent.click(smsLink)
+    await screen.findByRole('button', { name: 'I sent it (unverified)' })
+    fireEvent.click(screen.getByRole('button', { name: 'I sent it (unverified)' }))
     await waitFor(() => expect(state.reports[0].transmissionStatus).toBe('user_marked_attempted'))
     expect(screen.getByText(/delivery status is unknown/)).toBeInTheDocument()
   })

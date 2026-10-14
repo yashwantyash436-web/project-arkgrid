@@ -51,6 +51,8 @@ export type EmergencyDraft = {
 
 export type TransmissionStatus =
   | 'not_started'
+  | 'handoff_requested'
+  | 'handoff_failed'
   | 'composer_opened'
   | 'user_marked_attempted'
   | 'copied_for_manual_send'
@@ -71,6 +73,7 @@ export type EmergencyReport = EmergencyDraft & {
 
 export type EmergencySettings = {
   id: 'settings'
+  emergencyRegion: string
   trustedContacts: TrustedContact[]
   lastSyncAt: string | null
   recentLocation: RecentLocation | null

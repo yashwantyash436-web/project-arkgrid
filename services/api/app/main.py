@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import math
 import os
 import sqlite3
 import uuid
@@ -17,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.category_model import suggest_category
+from app.flood_risk import FloodInputs, run_demo_scenario
 from app.priority import calculate_priority
 
 USGS_FEED_URL = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
@@ -133,6 +135,15 @@ class CategorySuggestionInput(BaseModel):
     text: str = Field(min_length=5, max_length=500)
 
 
+class FloodSimulationInput(BaseModel):
+    rainfall_mm: float = Field(alias="rainfallMm", ge=0, le=500, allow_inf_nan=False)
+    water_level_m: float = Field(alias="waterLevelM", ge=0, le=20, allow_inf_nan=False)
+    river_level_m: float = Field(alias="riverLevelM", ge=0, le=20, allow_inf_nan=False)
+    terrain_elevation_m: float = Field(alias="terrainElevationM", ge=0, le=9000, allow_inf_nan=False)
+    water_level_trend_m_per_hour: float = Field(alias="waterLevelTrendMPerHour", ge=-5, le=5, allow_inf_nan=False)
+    horizon_hours: Literal[0, 1, 3, 6] = Field(alias="horizonHours")
+
+
 class EarthquakeCache:
     def __init__(self) -> None:
         self.features: list[dict[str, Any]] = []
@@ -164,18 +175,39 @@ def normalize_earthquakes(payload: dict[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(event_id, str) or len(coordinates) < 2 or not isinstance(epoch_ms, (int, float)):
                 continue
             longitude, latitude = float(coordinates[0]), float(coordinates[1])
-            if not (-180 <= longitude <= 180 and -90 <= latitude <= 90):
+            if not (math.isfinite(longitude) and math.isfinite(latitude) and
+                    -180 <= longitude <= 180 and -90 <= latitude <= 90):
                 continue
             event_time = datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).isoformat().replace("+00:00", "Z")
+            magnitude_value = properties.get("mag")
+            magnitude = (
+                float(magnitude_value)
+                if isinstance(magnitude_value, (int, float)) and math.isfinite(float(magnitude_value))
+                else None
+            )
+            depth_value = coordinates[2] if len(coordinates) > 2 else None
+            depth = (
+                float(depth_value)
+                if isinstance(depth_value, (int, float)) and math.isfinite(float(depth_value))
+                else None
+            )
+            place = properties.get("place")
+            if not isinstance(place, str) or not place:
+                place = "Unknown place"
+            event_url = properties.get("url")
             normalized.append({
                 "id": event_id,
-                "magnitude": properties.get("mag"),
-                "place": properties.get("place") or "Unknown place",
+                "magnitude": magnitude,
+                "place": place,
                 "time": event_time,
                 "latitude": latitude,
                 "longitude": longitude,
-                "depth_km": float(coordinates[2]) if len(coordinates) > 2 and coordinates[2] is not None else None,
-                "url": properties.get("url") or f"https://earthquake.usgs.gov/earthquakes/eventpage/{event_id}",
+                "depth_km": depth,
+                "url": (
+                    event_url
+                    if isinstance(event_url, str) and event_url.startswith("https://")
+                    else f"https://earthquake.usgs.gov/earthquakes/eventpage/{event_id}"
+                ),
             })
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
@@ -415,6 +447,21 @@ def create_app(
             return {"status": "ok", "database": "available", "time": utc_now()}
         except sqlite3.Error as error:
             raise HTTPException(status_code=503, detail="SQLite database is unavailable.") from error
+
+    @app.post("/api/flood/demo-simulation")
+    def flood_demo_simulation(payload: FloodSimulationInput) -> dict[str, Any]:
+        inputs = FloodInputs(
+            rainfall_mm=payload.rainfall_mm,
+            water_level_m=payload.water_level_m,
+            river_level_m=payload.river_level_m,
+            terrain_elevation_m=payload.terrain_elevation_m,
+            water_level_trend_m_per_hour=payload.water_level_trend_m_per_hour,
+            horizon_hours=payload.horizon_hours,
+        )
+        try:
+            return run_demo_scenario(inputs)
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail="The synthetic flood model is unavailable.") from error
 
     @app.get("/api/scenarios")
     def scenarios() -> dict[str, list[dict[str, str]]]:

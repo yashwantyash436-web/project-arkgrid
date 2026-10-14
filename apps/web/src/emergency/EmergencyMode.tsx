@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { arkgridApi, ApiError, apiBaseUrl } from '../api/client'
 import {
   isLikelyMultipartSms,
+  getSmsPlatform,
   normalizePhoneNumber,
   smsHandoffProvider,
 } from './communications'
@@ -41,19 +42,23 @@ function isEmergencyCategory(value: string | null): value is EmergencyCategory {
 }
 
 function describeStatus(report: EmergencyReport): string {
-  if (report.syncStatus === 'synchronized') return `Backend acknowledged persistence at ${formatTime(report.syncAttemptedAt)}; this does not confirm emergency-service delivery.`
-  if (report.syncStatus === 'failed') return `Saved on this device — delivery is not confirmed. Sync failed at ${formatTime(report.syncAttemptedAt)}. ${report.syncError ?? ''}`
-  if (report.transmissionStatus === 'user_marked_attempted') {
-    return `You marked an SMS attempt at ${formatTime(report.transmissionAttemptedAt)}; delivery status is unknown.`
-  }
-  if (report.transmissionStatus === 'composer_opened') {
-    return `SMS handoff requested at ${formatTime(report.transmissionAttemptedAt)}; delivery status is unknown.`
-  }
-  if (report.transmissionStatus === 'copied_for_manual_send') {
-    return `Message copied at ${formatTime(report.transmissionAttemptedAt)}; delivery status is unknown.`
-  }
-  if (report.syncStatus === 'pending') return 'Saved on this device — NOT YET DELIVERED. Ready to synchronize with the configured backend.'
-  return 'Saved on this device — NOT YET DELIVERED. Backend synchronization is not configured.'
+  const backendStatus = report.syncStatus === 'synchronized'
+    ? `Backend acknowledged persistence at ${formatTime(report.syncAttemptedAt)}; no emergency service was contacted.`
+    : report.syncStatus === 'failed'
+      ? `Backend sync failed at ${formatTime(report.syncAttemptedAt)}. ${report.syncError ?? ''}`
+      : report.syncStatus === 'pending'
+        ? 'Ready to synchronize with the configured backend.'
+        : 'Backend synchronization is not configured.'
+  const smsStatus = report.transmissionStatus === 'user_marked_attempted'
+    ? `You reported sending the SMS at ${formatTime(report.transmissionAttemptedAt)}; this is unverified and delivery status is unknown.`
+    : report.transmissionStatus === 'handoff_requested' || report.transmissionStatus === 'composer_opened'
+      ? `SMS handoff requested at ${formatTime(report.transmissionAttemptedAt)}; whether a composer opened and whether a message was sent are unknown.`
+      : report.transmissionStatus === 'handoff_failed'
+        ? `You reported that the SMS handoff was cancelled or unavailable at ${formatTime(report.transmissionAttemptedAt)}. No delivery is confirmed.`
+        : report.transmissionStatus === 'copied_for_manual_send'
+          ? `Message copied at ${formatTime(report.transmissionAttemptedAt)}; delivery status is unknown.`
+          : 'No SMS handoff attempted.'
+  return `Saved locally on this device. ${backendStatus} ${smsStatus}`
 }
 
 function isEditable(report: EmergencyReport): boolean {
@@ -76,16 +81,19 @@ export function EmergencyMode({
   const [reports, setReports] = useState<EmergencyReport[]>([])
   const [settings, setSettings] = useState<EmergencySettings>({
     id: 'settings',
+    emergencyRegion: '',
     trustedContacts: [],
     lastSyncAt: null,
     recentLocation: null,
   })
+  const [emergencyRegionDraft, setEmergencyRegionDraft] = useState('')
   const [draft, setDraft] = useState<EmergencyDraft>(emptyEmergencyDraft)
   const [activeTab, setActiveTab] = useState<'report' | 'queue' | 'settings'>(initialTab)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [contactDraft, setContactDraft] = useState({ id: '', name: '', relationship: '', phone: '', note: '' })
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([])
+  const [includeLocationInSms, setIncludeLocationInSms] = useState(false)
   const [validationErrors, setValidationErrors] = useState<string[]>([])
   const [storageError, setStorageError] = useState('')
   const [actionMessage, setActionMessage] = useState('')
@@ -105,10 +113,11 @@ export function EmergencyMode({
     () => reports.filter(report => report.syncStatus !== 'synchronized'),
     [reports],
   )
-  const smsMessage = selectedReport ? smsHandoffProvider.createMessage(selectedReport) : ''
+  const smsMessage = selectedReport
+    ? smsHandoffProvider.createMessage(selectedReport, includeLocationInSms)
+    : ''
   const selectedContacts = settings.trustedContacts.filter(contact => selectedContactIds.includes(contact.id))
-  const messageForContact = (contact: TrustedContact) =>
-    smsMessage + (contact.note ? `\nContact note: ${contact.note}` : '')
+  const messageForContact = () => smsMessage
 
   useEffect(() => {
     let mounted = true
@@ -117,6 +126,7 @@ export function EmergencyMode({
         if (!mounted) return
         setReports(storedReports)
         setSettings(storedSettings)
+        setEmergencyRegionDraft(storedSettings.emergencyRegion)
         setStorageLoaded(true)
       })
       .catch(() => {
@@ -391,6 +401,22 @@ export function EmergencyMode({
     }
   }
 
+  async function saveEmergencyRegion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (emergencyRegionDraft.trim().length > 80) {
+      setActionMessage('Keep the emergency region or country label to 80 characters or fewer.')
+      return
+    }
+    const nextSettings = { ...settings, emergencyRegion: emergencyRegionDraft.trim() }
+    try {
+      await emergencyStorage.saveSettings(nextSettings)
+      setSettings(nextSettings)
+      setActionMessage('Region label saved on this device. ArkGrid does not verify or look up emergency numbers.')
+    } catch {
+      setStorageError('Could not save the region label on this device.')
+    }
+  }
+
   async function deleteTrustedContact(contact: TrustedContact) {
     if (!window.confirm(`Delete ${contact.name} from this device?`)) return
     const nextSettings = { ...settings, trustedContacts: settings.trustedContacts.filter(item => item.id !== contact.id) }
@@ -493,6 +519,15 @@ export function EmergencyMode({
     })
   }
 
+  function markSmsHandoffFailed(report: EmergencyReport) {
+    void updateReport({
+      ...report,
+      transmissionStatus: 'handoff_failed',
+      transmissionAttemptedAt: currentTimestamp(),
+    })
+    setActionMessage('You reported that the SMS handoff was cancelled or unavailable. ArkGrid did not send the message.')
+  }
+
   async function copySmsMessage() {
     if (!selectedReport) return
     const transmissionAttemptedAt = currentTimestamp()
@@ -508,6 +543,16 @@ export function EmergencyMode({
     } catch {
       setActionMessage('Automatic copy is unavailable. Select and copy the message below manually.')
     }
+  }
+
+  function smsHref(contact: TrustedContact): string {
+    const recipient = normalizePhoneNumber(contact.phone)
+    if (!recipient) return '#'
+    return smsHandoffProvider.createHref(
+      recipient,
+      messageForContact(),
+      getSmsPlatform(navigator.userAgent, navigator.platform, navigator.maxTouchPoints),
+    )
   }
 
   return (
@@ -704,6 +749,15 @@ export function EmergencyMode({
       {activeTab === 'settings' && (
         <section className="grid gap-5">
           <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <form className="mb-5 grid gap-3 border-b border-slate-200 pb-5 sm:grid-cols-[1fr_auto]" onSubmit={event => void saveEmergencyRegion(event)}>
+              <label className={labelClass}>Your country / region (optional, for your reference)
+                <input className={inputClass} maxLength={80} value={emergencyRegionDraft}
+                  placeholder="Enter a country or region label"
+                  onChange={event => setEmergencyRegionDraft(event.target.value)} />
+                <span className="text-xs font-normal text-slate-600">This label does not look up or recommend an emergency number. Verify official local numbers yourself; to use one in ArkGrid, add it as a trusted contact using its full international number.</span>
+              </label>
+              <button type="submit" className="min-h-12 self-start rounded-lg border border-slate-500 px-4 text-sm font-semibold text-slate-900">Save region</button>
+            </form>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="text-xl font-bold text-slate-950">Trusted contacts · local only</h2>
@@ -880,9 +934,13 @@ export function EmergencyMode({
               ) : selectedContacts.map(contact => (
                 <label key={`preview-${contact.id}`} className={labelClass}>
                   Exact SMS preview for {contact.name} · {contact.phone}
-                  <textarea aria-label={`SMS message preview for ${contact.name}`} className={`${inputClass} font-mono text-sm`} rows={9} readOnly value={messageForContact(contact)} />
+                  <textarea aria-label={`SMS message preview for ${contact.name}`} className={`${inputClass} font-mono text-sm`} rows={9} readOnly value={messageForContact()} />
                 </label>
               ))}
+              <label className="flex min-h-12 items-center gap-3 rounded-lg border border-slate-300 p-3 text-sm font-semibold text-slate-800">
+                <input type="checkbox" checked={includeLocationInSms} onChange={event => setIncludeLocationInSms(event.target.checked)} />
+                Include location details, coordinates and map link in the SMS (explicit consent)
+              </label>
               {isLikelyMultipartSms(smsMessage) && (
                 <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-950">This message exceeds 160 characters and may be split into multiple SMS segments.</p>
               )}
@@ -890,12 +948,21 @@ export function EmergencyMode({
                 {selectedContacts.map(contact => (
                   <a key={contact.id}
                     className="inline-flex min-h-14 items-center rounded-lg bg-red-700 px-5 text-base font-bold text-white"
-                    href={smsHandoffProvider.createHref(contact.phone, messageForContact(contact))}
-                    onClick={() => void updateReport({
-                      ...selectedReport,
-                      transmissionStatus: 'composer_opened',
-                      transmissionAttemptedAt: new Date().toISOString(),
-                    })}
+                    href={smsHref(contact)}
+                    onClick={event => {
+                      const recipient = normalizePhoneNumber(contact.phone)
+                      if (!recipient) {
+                        event.preventDefault()
+                        setActionMessage(`The saved number for ${contact.name} is invalid. Edit this contact using an international +countrycode number before preparing an SMS.`)
+                        return
+                      }
+                      void updateReport({
+                        ...selectedReport,
+                        transmissionStatus: 'handoff_requested',
+                        transmissionAttemptedAt: currentTimestamp(),
+                      })
+                      setActionMessage('SMS handoff requested for the selected recipient. The browser cannot confirm that a composer opened or that a message was sent.')
+                    }}
                   >
                     Prepare SMS for {contact.name} ({contact.phone})
                   </a>
@@ -904,13 +971,20 @@ export function EmergencyMode({
                   Copy message instead
                 </button>
               </div>
-              <p className="text-xs text-slate-600">The SMS protocol handoff may be unsupported by your current browser/device. Opening a composer does not send or deliver the message. If there is no compatible messaging app, copy the text and use a supported channel directly.</p>
-              {(selectedReport.transmissionStatus === 'composer_opened' || selectedReport.transmissionStatus === 'copied_for_manual_send') && (
+              <p className="text-xs text-slate-600">The SMS URI is a user-initiated handoff, not a send API. Browsers cannot reliably detect whether a composer opened, whether you cancelled, or whether delivery succeeded. On desktop or unsupported devices, copy the preview and use a messaging app yourself. Never retry automatically.</p>
+              {(selectedReport.transmissionStatus === 'handoff_requested' ||
+                selectedReport.transmissionStatus === 'composer_opened' ||
+                selectedReport.transmissionStatus === 'copied_for_manual_send') && (
                 <div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
-                  <p className="text-sm text-amber-950">Did you attempt to send this message? ArkGrid cannot confirm delivery.</p>
-                  <button type="button" className="mt-3 min-h-12 rounded-lg border border-amber-700 px-4 text-sm font-bold text-amber-950" onClick={() => markSmsAttempted(selectedReport)}>
-                    I attempted to send it
-                  </button>
+                  <p className="text-sm text-amber-950">Report what happened after returning to ArkGrid. Delivery remains unknown unless a real carrier receipt exists (none is connected).</p>
+                  <div className="mt-3 flex flex-wrap gap-3">
+                    <button type="button" className="min-h-12 rounded-lg border border-amber-700 px-4 text-sm font-bold text-amber-950" onClick={() => markSmsAttempted(selectedReport)}>
+                      I sent it (unverified)
+                    </button>
+                    <button type="button" className="min-h-12 rounded-lg border border-slate-500 bg-white px-4 text-sm font-semibold text-slate-900" onClick={() => markSmsHandoffFailed(selectedReport)}>
+                      I cancelled / no SMS app opened
+                    </button>
+                  </div>
                 </div>
               )}
             </section>

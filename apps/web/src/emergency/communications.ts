@@ -10,9 +10,11 @@ export interface BackendSyncProvider extends CommunicationProvider {
 }
 
 export interface SmsHandoffProvider extends CommunicationProvider {
-  createHref(recipient: string, message: string): string
-  createMessage(report: EmergencyReport): string
+  createHref(recipient: string, message: string, platform?: SmsPlatform): string
+  createMessage(report: EmergencyReport, includeLocation?: boolean): string
 }
+
+export type SmsPlatform = 'ios' | 'standard'
 
 export interface FutureBluetoothProvider extends CommunicationProvider {
   readonly supported: false
@@ -69,23 +71,27 @@ export function normalizePhoneNumber(value: string): string | null {
   return /^\+[1-9]\d{7,14}$/.test(normalized) ? normalized : null
 }
 
-export function formatSmsMessage(report: EmergencyReport): string {
+export function formatSmsMessage(report: EmergencyReport, includeLocation = false): string {
   const coordinates = report.latitude !== null && report.longitude !== null
     ? `${report.latitude.toFixed(5)},${report.longitude.toFixed(5)}`
     : ''
-  const location = [coordinates, report.manualLocation.trim()].filter(Boolean).join(' / ')
-  const mapLink = report.latitude !== null && report.longitude !== null
+  const location = includeLocation
+    ? [coordinates, report.manualLocation.trim()].filter(Boolean).join(' / ')
+    : ''
+  const mapLink = includeLocation && report.latitude !== null && report.longitude !== null
     ? `https://www.openstreetmap.org/?mlat=${report.latitude}&mlon=${report.longitude}#map=16/${report.latitude}/${report.longitude}`
     : ''
   const parts = [
     `ARKGRID SOS ${report.id}`,
     `${report.severity} ${report.incidentType}; ${report.peopleAffected} affected`,
-    `Location: ${location}`,
+    includeLocation
+      ? `Location: ${location || 'not provided'}`
+      : 'Location omitted; enable location sharing only if you choose.',
     mapLink ? `Map: ${mapLink}` : '',
-    report.locationSource === 'device' && report.locationAccuracyMeters !== null
+    includeLocation && report.locationSource === 'device' && report.locationAccuracyMeters !== null
       ? `Browser-reported accuracy: ±${Math.round(report.locationAccuracyMeters)} m`
-      : report.locationSource === 'manual' ? 'Coordinates were entered manually.' : '',
-    report.locationCapturedAt ? `Location captured: ${new Date(report.locationCapturedAt).toISOString()}` : '',
+      : includeLocation && report.locationSource === 'manual' ? 'Coordinates were entered manually.' : '',
+    includeLocation && report.locationCapturedAt ? `Location captured: ${new Date(report.locationCapturedAt).toISOString()}` : '',
     `Time: ${new Date(report.createdAt).toISOString()}`,
     `Need: ${report.category}`,
     report.message.trim() ? `Details: ${report.message.trim()}` : '',
@@ -97,10 +103,18 @@ export function formatSmsMessage(report: EmergencyReport): string {
 export const smsHandoffProvider: SmsHandoffProvider = {
   id: 'sms-handoff',
   label: 'User-confirmed SMS handoff',
-  createHref(recipient, message) {
-    return `sms:${recipient}?body=${encodeURIComponent(message)}`
+  createHref(recipient, message, platform = 'standard') {
+    const separator = platform === 'ios' ? '&' : '?'
+    return `sms:${recipient}${separator}body=${encodeURIComponent(message)}`
   },
   createMessage: formatSmsMessage,
+}
+
+export function getSmsPlatform(userAgent: string, platform = '', maxTouchPoints = 0): SmsPlatform {
+  return /iPad|iPhone|iPod/i.test(userAgent) ||
+    (platform === 'MacIntel' && maxTouchPoints > 1 && /Macintosh/i.test(userAgent))
+    ? 'ios'
+    : 'standard'
 }
 
 export function isLikelyMultipartSms(message: string): boolean {
