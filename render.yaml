@@ -25,8 +25,9 @@ services:
       - key: ARKGRID_LOG_LEVEL
         value: info
 
-  - type: static
+  - type: web
     name: arkgrid-web
+    runtime: static
     rootDir: apps/web
     buildCommand: |
       corepack enable

@@ -80,7 +80,7 @@ To deploy it:
 4. Set a secure `ARKGRID_COORDINATOR_TOKEN` in the Render dashboard if you want override support enabled.
 5. Deploy the blueprint.
 
-The frontend service expects the backend to be available at `https://arkgrid-api.onrender.com` unless you rename the service or change the `VITE_ARKGRID_API_URL` value in the Render dashboard.
+The frontend static site is declared using Render's `type: web` with `runtime: static` format. It expects the backend to be available at `https://arkgrid-api.onrender.com` unless you rename the service or change the `VITE_ARKGRID_API_URL` value in the Render dashboard.
 
 ## Offline and PWA testing
 
