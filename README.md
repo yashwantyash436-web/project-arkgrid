@@ -2,6 +2,12 @@
 
 ArkGrid is a geospatial disaster-intelligence prototype for observations, citizen reports, offline emergency record keeping, and coordinator review. It is a **demonstration system**, not an emergency service; it does not dispatch responders or guarantee communications or rescue.
 
+## Live demo
+
+- Web app: [https://arkgrid-web.onrender.com](https://arkgrid-web.onrender.com)
+- API health: [https://arkgrid-api.onrender.com/api/health](https://arkgrid-api.onrender.com/api/health)
+- Interactive API docs: [https://arkgrid-api.onrender.com/docs](https://arkgrid-api.onrender.com/docs)
+
 ## Implemented demo capabilities
 
 - React, TypeScript, Vite, Tailwind, Leaflet, and an installable PWA shell.
