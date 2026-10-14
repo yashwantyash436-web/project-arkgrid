@@ -31,6 +31,15 @@ describe('ArkGrid frontend', () => {
     expect(screen.getByText(/No earthquake events are displayed or fabricated/)).toBeInTheDocument()
   })
 
+  it('uses browser network events as device-connection hints', () => {
+    render(<App />)
+
+    const connectionStatus = screen.getByRole('status')
+    expect(connectionStatus).toHaveTextContent('Online (browser hint)')
+    fireEvent(window, new Event('offline'))
+    expect(connectionStatus).toHaveTextContent('Offline (browser hint)')
+  })
+
   it('selects the custom map scenario and reports a clicked coordinate', () => {
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: 'Interactive map' }))
