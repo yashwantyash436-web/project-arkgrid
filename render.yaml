@@ -9,13 +9,9 @@ services:
       pip install -e .
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
-    disk:
-      name: arkgrid-data
-      mountPath: /data
-      sizeGB: 1
     envVars:
       - key: DATABASE_URL
-        value: sqlite:////data/arkgrid.sqlite3
+        value: sqlite:///./arkgrid.sqlite3
       - key: ARKGRID_ALLOWED_ORIGINS
         value: https://arkgrid-web.onrender.com
       - key: ARKGRID_COORDINATOR_TOKEN

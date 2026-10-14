@@ -68,7 +68,7 @@ Vite proxies `/api` to `http://127.0.0.1:8000` during local development. For a s
 
 This repository includes a Render Blueprint at [`render.yaml`](./render.yaml). It provisions:
 
-- an API service running FastAPI and SQLite on a persistent Render disk,
+- a free-tier API service running FastAPI and SQLite on Render's ephemeral filesystem (database records can be lost on restart or redeploy),
 - a frontend static site built from the Vite app,
 - the required environment configuration for the web app to reach the API.
 
