@@ -16,12 +16,23 @@ vi.mock('../api/client', () => ({
 }))
 
 vi.mock('./MapView', () => ({
+  emptyHazardLayers: {
+    citizenReports: false,
+    floodRisk: false,
+    floodPath: false,
+    landslideZones: false,
+    affectedPopulation: false,
+    lowerRiskLocations: false,
+    fictionalResources: false,
+  },
   MapView: ({
     markers,
     earthquakes,
     showEarthquakes,
     center,
     zoom,
+    selectedSeismicRegion,
+    showRegionBounds,
     onEarthquakeSelect,
     onDemoIncidentSelect,
   }: {
@@ -30,10 +41,13 @@ vi.mock('./MapView', () => ({
     showEarthquakes: boolean
     center: [number, number]
     zoom: number
+    selectedSeismicRegion: { name: string } | null
+    showRegionBounds: boolean
     onEarthquakeSelect: (event: Earthquake) => void
     onDemoIncidentSelect: (incident: { id: string; title: string; location: string; severity: string; description: string }) => void
   }) => (
-    <div data-testid="monitor-map-view" data-center={center.join(',')} data-zoom={zoom}>
+    <div data-testid="monitor-map-view" data-center={center.join(',')} data-zoom={zoom}
+      data-selected-region={selectedSeismicRegion?.name ?? ''} data-region-bounds={showRegionBounds}>
       <p>Demo markers: {markers ? 'visible' : 'hidden'} · USGS markers: {showEarthquakes ? earthquakes.length : 0}</p>
       {showEarthquakes && earthquakes.map(event => (
         <button key={event.id} type="button" onClick={() => onEarthquakeSelect(event)}>Select map event {event.id}</button>
@@ -49,11 +63,12 @@ afterEach(cleanup)
 
 describe('live map and event list', () => {
   it('toggles only demo markers and connects selecting an event with its details', async () => {
+    const observedRecently = new Date(Date.now() - 60 * 60 * 1000).toISOString()
     const event: Earthquake = {
       id: 'usgs-test-1',
       magnitude: 4.1,
       place: 'Test region',
-      time: '2026-10-14T05:00:00Z',
+      time: observedRecently,
       latitude: 27.7,
       longitude: 85.3,
       depth_km: 18,
@@ -65,7 +80,7 @@ describe('live map and event list', () => {
       source_name: 'USGS Earthquake Hazards Program',
       source_url: 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson',
       data_class: 'external_observation',
-      fetched_at: '2026-10-14T05:01:00Z',
+      fetched_at: observedRecently,
       stale: false,
       error: null,
       disclaimer: 'Observation only',
@@ -76,7 +91,7 @@ describe('live map and event list', () => {
     expect(screen.getByTestId('monitor-map-view')).toHaveAttribute('data-center', '18,0')
     expect(screen.getByTestId('monitor-map-view')).toHaveAttribute('data-zoom', '2')
     fireEvent.click(screen.getByRole('button', { name: 'Scenario region' }))
-    expect(screen.getByTestId('monitor-map-view')).toHaveAttribute('data-center', '27.7,85.3')
+    expect(screen.getByTestId('monitor-map-view')).toHaveAttribute('data-center', '28.3,84.5')
     fireEvent.click(screen.getByRole('button', { name: 'Global overview' }))
     fireEvent.click(screen.getByLabelText(/Fictional demo incidents/))
     expect(screen.getByText('Demo markers: visible · USGS markers: 1')).toBeInTheDocument()
@@ -96,5 +111,41 @@ describe('live map and event list', () => {
     expect(screen.getByText('Demo markers: hidden · USGS markers: 1')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /Demo fixture ·/ })).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Selected USGS observation · M4.1' })).toBeInTheDocument()
+  })
+
+  it('filters observations to the selected region and labels its approximate bounds', async () => {
+    const recent = Date.now() - 30 * 60 * 1000
+    const event = (id: string, place: string, latitude: number, longitude: number): Earthquake => ({
+      id,
+      magnitude: 4.2,
+      place,
+      time: new Date(recent).toISOString(),
+      latitude,
+      longitude,
+      depth_km: 10,
+      url: `https://earthquake.usgs.gov/earthquakes/eventpage/${id}`,
+    })
+    api.earthquakes.mockResolvedValue({
+      items: [event('japan-1', 'Japan', 38, 141), event('nepal-1', 'Nepal', 28, 85)],
+      total: 2,
+      source_name: 'USGS Earthquake Hazards Program',
+      source_url: 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson',
+      data_class: 'external_observation',
+      fetched_at: new Date().toISOString(),
+      stale: false,
+      error: null,
+      disclaimer: 'Observation only',
+    })
+    render(<LiveMonitoring center={[27.7, 85.3]} />)
+
+    expect(await screen.findByText('Demo markers: hidden · USGS markers: 2')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Monitored seismic region'), { target: { value: 'japan' } })
+    expect(screen.getByText('Demo markers: hidden · USGS markers: 1')).toBeInTheDocument()
+    expect(screen.getByTestId('monitor-map-view')).toHaveAttribute('data-center', '38,141')
+    expect(screen.getByTestId('monitor-map-view')).toHaveAttribute('data-selected-region', 'Japan')
+    expect(screen.getByText('1 observation in the selected time window')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Show approximate monitored-region bounds'))
+    expect(screen.getByTestId('monitor-map-view')).toHaveAttribute('data-region-bounds', 'true')
+    expect(screen.getByText(/approximate monitoring bounds/)).toBeInTheDocument()
   })
 })

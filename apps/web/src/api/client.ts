@@ -32,6 +32,30 @@ function isHealthResponse(value: unknown): value is HealthResponse {
   return 'time' in value && typeof value.time === 'string' && Number.isFinite(Date.parse(value.time))
 }
 
+function isEarthquakeResponse(value: unknown): value is EarthquakeResponse {
+  if (typeof value !== 'object' || value === null || !('items' in value) || !Array.isArray(value.items)) return false
+  if (!('total' in value) || value.total !== value.items.length) return false
+  if (!('source_name' in value) || typeof value.source_name !== 'string') return false
+  if (!('source_url' in value) || typeof value.source_url !== 'string' || !value.source_url.startsWith('https://')) return false
+  if (!('data_class' in value) || value.data_class !== 'external_observation') return false
+  if (!('fetched_at' in value) || (value.fetched_at !== null && (typeof value.fetched_at !== 'string' || !Number.isFinite(Date.parse(value.fetched_at))))) return false
+  if (!('stale' in value) || typeof value.stale !== 'boolean') return false
+  if (!('error' in value) || (value.error !== null && typeof value.error !== 'string')) return false
+  if (!('disclaimer' in value) || typeof value.disclaimer !== 'string') return false
+  if ('cache_age_seconds' in value && (typeof value.cache_age_seconds !== 'number' || !Number.isFinite(value.cache_age_seconds) || value.cache_age_seconds < 0)) return false
+  return value.items.every((item: unknown) => {
+    if (typeof item !== 'object' || item === null) return false
+    if (!('id' in item) || typeof item.id !== 'string' || !item.id) return false
+    if (!('magnitude' in item) || (item.magnitude !== null && (typeof item.magnitude !== 'number' || !Number.isFinite(item.magnitude)))) return false
+    if (!('place' in item) || typeof item.place !== 'string') return false
+    if (!('time' in item) || typeof item.time !== 'string' || !Number.isFinite(Date.parse(item.time))) return false
+    if (!('latitude' in item) || typeof item.latitude !== 'number' || !Number.isFinite(item.latitude) || item.latitude < -90 || item.latitude > 90) return false
+    if (!('longitude' in item) || typeof item.longitude !== 'number' || !Number.isFinite(item.longitude) || item.longitude < -180 || item.longitude > 180) return false
+    if (!('depth_km' in item) || (item.depth_km !== null && (typeof item.depth_km !== 'number' || !Number.isFinite(item.depth_km)))) return false
+    return 'url' in item && typeof item.url === 'string' && item.url.startsWith('https://')
+  })
+}
+
 async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 8000): Promise<T> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -78,9 +102,14 @@ export const arkgridApi = {
     return value
   },
 
-  earthquakes(minMagnitude = -2): Promise<EarthquakeResponse> {
+  async earthquakes(minMagnitude = -2, refresh = false): Promise<EarthquakeResponse> {
     const query = new URLSearchParams({ min_magnitude: String(minMagnitude) })
-    return request<EarthquakeResponse>(`/api/hazards/earthquakes?${query}`)
+    if (refresh) query.set('refresh', 'true')
+    const response = await request<unknown>(`/api/hazards/earthquakes?${query}`, {}, 18000)
+    if (!isEarthquakeResponse(response)) {
+      throw new ApiError('ArkGrid earthquake endpoint returned an invalid response.')
+    }
+    return response
   },
 
   incidents(filters: { search?: string; type?: string; severity?: string; status?: string; location?: string } = {}) {

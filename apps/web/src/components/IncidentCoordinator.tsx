@@ -4,7 +4,13 @@ import type { Incident, Resource } from '../api/types'
 
 const statusOptions: Incident['status'][] = ['new', 'triaged', 'assigned', 'resolved', 'closed']
 
-export function IncidentCoordinator({ heading = 'Persisted incident coordination' }: { heading?: string }) {
+export function IncidentCoordinator({
+  heading = 'Persisted incident coordination',
+  onCreateDemoReport,
+}: {
+  heading?: string
+  onCreateDemoReport?: () => void
+}) {
   const [items, setItems] = useState<Incident[]>([])
   const [resources, setResources] = useState<Resource[]>([])
   const [selectedId, setSelectedId] = useState('')
@@ -123,10 +129,13 @@ export function IncidentCoordinator({ heading = 'Persisted incident coordination
   }
 
   return (
-    <section className="space-y-5">
+    <section className="min-w-0 space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div><h2 className="text-lg font-bold text-slate-950">{heading}</h2><p className="mt-1 text-sm text-slate-600">Records are persisted in the local SQLite demo database. Resources are fictional, not operational responders.</p></div>
-        <button type="button" onClick={() => void refresh()} disabled={loading} className="min-h-11 rounded-lg border border-slate-400 bg-white px-4 text-sm font-semibold">{loading ? 'Loading…' : 'Refresh queue'}</button>
+        <div className="flex flex-wrap gap-2">
+          {onCreateDemoReport && <button type="button" onClick={onCreateDemoReport} className="min-h-11 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white">Submit demo report</button>}
+          <button type="button" onClick={() => void refresh()} disabled={loading} className="min-h-11 rounded-lg border border-slate-400 bg-white px-4 text-sm font-semibold">{loading ? 'Loading…' : 'Refresh queue'}</button>
+        </div>
       </div>
       {error && <p role="alert" className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-900">{error}</p>}
       {message && <p role="status" className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">{message}</p>}
@@ -152,11 +161,11 @@ export function IncidentCoordinator({ heading = 'Persisted incident coordination
           ))}</ul>}
       </section>
       {selected && (
-        <div className="grid gap-5 xl:grid-cols-[.9fr_1.1fr]">
-          <ul className="divide-y divide-slate-200 rounded-xl border border-slate-200 bg-white px-4">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(0,.9fr)_minmax(0,1.1fr)]">
+          <ul className="min-w-0 divide-y divide-slate-200 rounded-xl border border-slate-200 bg-white px-4">
             {filtered.map(item => (
               <li key={item.id}>
-                <button type="button" onClick={() => setSelectedId(item.id)} className={`w-full py-4 text-left ${selected.id === item.id ? 'font-semibold text-slate-950' : 'text-slate-700'}`}>
+                <button type="button" onClick={() => setSelectedId(item.id)} className={`min-w-0 w-full py-4 text-left ${selected.id === item.id ? 'font-semibold text-slate-950' : 'text-slate-700'}`}>
                   <span className="block">{item.severity} · {item.incident_type}</span>
                   <span className="mt-1 block break-all text-xs">{item.id} · {item.manual_location || 'Coordinates provided'}</span>
                   <span className="mt-1 block text-xs">Status: {item.status} · Priority {item.priority.score}/100 ({item.priority.band})</span>
@@ -166,7 +175,7 @@ export function IncidentCoordinator({ heading = 'Persisted incident coordination
               </li>
             ))}
           </ul>
-          <article className="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
+          <article className="min-w-0 space-y-4 rounded-xl border border-slate-200 bg-white p-5">
             <div><h3 className="text-lg font-bold text-slate-950">Incident detail</h3><p className="mt-1 break-all text-xs text-slate-500">{selected.id} · Created {new Date(selected.created_at).toLocaleString()}</p></div>
             <dl className="grid gap-3 text-sm sm:grid-cols-2">
               <div><dt className="text-slate-500">Type / category</dt><dd className="font-medium">{selected.incident_type} · {selected.category}</dd></div>
@@ -205,13 +214,13 @@ export function IncidentCoordinator({ heading = 'Persisted incident coordination
                 {statusOptions.map(value => <option key={value}>{value}</option>)}
               </select>
             </label>
-            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
               <input aria-label="Internal coordinator note" value={note} onChange={event => setNote(event.target.value)} maxLength={2000} placeholder="Internal note" className="min-h-11 rounded-lg border border-slate-300 px-3" />
               <button type="button" onClick={() => void addNote()} disabled={saving || !note.trim()} className="min-h-11 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white disabled:opacity-50">Add note</button>
             </div>
             <ul className="space-y-2 text-sm">{selected.internal_notes.map((item, index) => <li key={`${item.created_at}-${index}`} className="rounded bg-slate-50 p-3">{item.text}<span className="mt-1 block text-xs text-slate-500">{new Date(item.created_at).toLocaleString()} · internal</span></li>)}</ul>
-            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-              <select aria-label="Assign simulated resource" value={assignment} onChange={event => setAssignment(event.target.value)} className="min-h-11 rounded-lg border border-slate-300 px-3"><option value="">Select an available demo resource</option>{availableResources.map(resource => <option key={resource.id} value={resource.id}>{resource.name} · {resource.capabilities.join(', ')}</option>)}</select>
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <select aria-label="Assign simulated resource" value={assignment} onChange={event => setAssignment(event.target.value)} className="min-h-11 min-w-0 rounded-lg border border-slate-300 px-3"><option value="">Select an available demo resource</option>{availableResources.map(resource => <option key={resource.id} value={resource.id}>{resource.name} · {resource.capabilities.join(', ')}</option>)}</select>
               <button type="button" onClick={() => void assignResource()} disabled={saving || !assignment} className="min-h-11 rounded-lg border border-slate-400 px-4 text-sm font-semibold disabled:opacity-50">Assign demo resource</button>
             </div>
             {selected.assigned_resource_id && <p className="text-sm font-semibold text-amber-900">Assigned resource: {selected.assigned_resource_id} (fictional demonstration resource; not dispatched).</p>}

@@ -32,7 +32,7 @@ export function SourceStatusPanel({ compact = false }: { compact?: boolean }) {
   useEffect(() => { void Promise.resolve().then(refresh) }, [refresh])
 
   return (
-    <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
+    <section className="min-w-0 space-y-4 rounded-xl border border-slate-200 bg-white p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-slate-950">External source status</h2>
@@ -45,10 +45,10 @@ export function SourceStatusPanel({ compact = false }: { compact?: boolean }) {
       </div>
       {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-900">{error}</p>}
       {!error && !loading && sources.length === 0 && <p className="text-sm text-slate-600">No source status is available.</p>}
-      <ul className="grid gap-3 lg:grid-cols-2">
+      <ul className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-[repeat(2,minmax(0,1fr))]">
         {sources.map(source => (
-          <li key={source.name} className="rounded-lg border border-slate-200 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
+          <li key={source.name} className="min-w-0 rounded-lg border border-slate-200 p-4">
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
               <a href={source.url} target="_blank" rel="noreferrer" className="font-semibold text-slate-950 underline">{source.name}</a>
               <span className={`rounded-full px-2 py-1 text-xs font-bold ${source.data_available ? 'bg-emerald-100 text-emerald-900' : source.page_reachable ? 'bg-amber-100 text-amber-900' : 'bg-red-100 text-red-900'}`}>
                 {source.data_available ? 'Data connected' : source.page_reachable ? 'Page/metadata only' : 'Unavailable'}

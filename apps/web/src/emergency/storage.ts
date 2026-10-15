@@ -12,6 +12,7 @@ export interface EmergencyStorage {
   deleteReport(id: string): Promise<void>
   getSettings(): Promise<EmergencySettings>
   saveSettings(settings: EmergencySettings): Promise<void>
+  updateSettings(update: (settings: EmergencySettings) => EmergencySettings): Promise<EmergencySettings>
 }
 
 function openDatabase(factory: IDBFactory = indexedDB): Promise<IDBDatabase> {
@@ -102,6 +103,40 @@ async function withStore<T>(
   }
 }
 
+async function updateSettings(
+  factory: IDBFactory | undefined,
+  update: (settings: EmergencySettings) => EmergencySettings,
+): Promise<EmergencySettings> {
+  const database = await openDatabase(factory)
+  try {
+    return await new Promise<EmergencySettings>((resolve, reject) => {
+      const transaction = database.transaction(SETTINGS_STORE, 'readwrite')
+      const store = transaction.objectStore(SETTINGS_STORE)
+      const request = store.get('settings')
+      let updatedSettings: EmergencySettings | undefined
+
+      request.onsuccess = () => {
+        try {
+          updatedSettings = update(normalizeSettings(request.result))
+          store.put(updatedSettings)
+        } catch (error) {
+          reject(error)
+          transaction.abort()
+        }
+      }
+      request.onerror = () => reject(request.error ?? new Error('Could not read local emergency settings.'))
+      transaction.oncomplete = () => {
+        if (updatedSettings) resolve(updatedSettings)
+        else reject(new Error('Local emergency settings were not updated.'))
+      }
+      transaction.onerror = () => reject(transaction.error ?? new Error('Local emergency settings transaction failed.'))
+      transaction.onabort = () => reject(transaction.error ?? new Error('Local emergency settings transaction was aborted.'))
+    })
+  } finally {
+    database.close()
+  }
+}
+
 export function createEmergencyStorage(factory?: IDBFactory): EmergencyStorage {
   return {
     async listReports() {
@@ -143,6 +178,9 @@ export function createEmergencyStorage(factory?: IDBFactory): EmergencyStorage {
     },
     async saveSettings(settings) {
       await withStore(SETTINGS_STORE, 'readwrite', store => store.put(settings), factory)
+    },
+    updateSettings(update) {
+      return updateSettings(factory, update)
     },
   }
 }

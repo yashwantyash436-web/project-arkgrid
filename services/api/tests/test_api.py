@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 import httpx
 from fastapi.testclient import TestClient
 
-from app.main import SOURCE_PAGES, connect, create_app, initialize_database, normalize_earthquakes
+from app.main import SOURCE_PAGES, connect, create_app, fetch_usgs_feed, initialize_database, normalize_earthquakes
 from app.priority import calculate_priority
 
 
@@ -122,6 +123,7 @@ def test_earthquake_normalization_keeps_global_coordinates_and_ignores_invalid_v
         "properties": {"mag": 5, "time": 1791950400000},
         "geometry": {"type": "Point", "coordinates": [0, 91]},
     })
+    payload["features"].append(payload["features"][1].copy())
 
     items = normalize_earthquakes(payload)
     by_place = {item["place"]: item for item in items}
@@ -129,6 +131,101 @@ def test_earthquake_normalization_keeps_global_coordinates_and_ignores_invalid_v
     assert by_place["Africa"]["magnitude"] is None
     assert all(item["latitude"] <= 90 and item["latitude"] >= -90 for item in items)
     assert "invalid-latitude" not in {item["id"] for item in items}
+    assert len({item["id"] for item in items}) == len(items)
+
+
+def test_earthquake_endpoint_reports_empty_feed_and_validates_magnitude(tmp_path):
+    async def empty_feed():
+        return {"type": "FeatureCollection", "features": []}
+
+    with create_test_client(tmp_path, fetcher=empty_feed) as client:
+        response = client.get("/api/hazards/earthquakes")
+        assert response.status_code == 200
+        assert response.json()["items"] == []
+        assert response.json()["total"] == 0
+        assert response.json()["stale"] is False
+        assert response.json()["cache_age_seconds"] >= 0
+        assert client.get("/api/hazards/earthquakes?min_magnitude=11").status_code == 422
+
+
+def test_failed_manual_refresh_keeps_stale_data_and_respects_retry_cooldown(tmp_path):
+    calls = 0
+
+    async def flaky_feed():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return feed_payload()
+        raise httpx.ReadTimeout("USGS timed out")
+
+    with create_test_client(tmp_path, fetcher=flaky_feed) as client:
+        fresh = client.get("/api/earthquakes")
+        assert fresh.status_code == 200
+        assert fresh.json()["stale"] is False
+
+        stale = client.get("/api/earthquakes?refresh=true")
+        assert stale.status_code == 200
+        assert stale.json()["stale"] is True
+        assert stale.json()["error"] == "USGS timed out"
+        assert stale.json()["items"][0]["id"] == "us7000test"
+        assert calls == 3
+
+        cooled_down = client.get("/api/earthquakes?refresh=true")
+        assert cooled_down.status_code == 200
+        assert cooled_down.json()["stale"] is True
+        assert calls == 3
+
+
+def test_simultaneous_earthquake_refreshes_share_one_upstream_request(tmp_path):
+    calls = 0
+
+    async def slow_feed():
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return feed_payload()
+
+    app = create_app(tmp_path / "concurrent.sqlite3", earthquake_fetcher=slow_feed)
+
+    async def fetch_concurrently():
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+            ) as client:
+                return await asyncio.gather(*(client.get("/api/earthquakes?refresh=true") for _ in range(8)))
+
+    responses = asyncio.run(fetch_concurrently())
+    assert all(response.status_code == 200 for response in responses)
+    assert all(response.json()["items"][0]["id"] == "us7000test" for response in responses)
+    assert calls == 1
+
+
+def test_usgs_feed_rejects_malformed_json_and_http_failures():
+    async def verify():
+        malformed = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=b"not json")),
+        )
+        async with malformed:
+            try:
+                await fetch_usgs_feed(client=malformed)
+            except ValueError as error:
+                assert "invalid JSON" in str(error)
+            else:
+                raise AssertionError("Malformed JSON should not be accepted.")
+
+        unavailable = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(503)),
+        )
+        async with unavailable:
+            try:
+                await fetch_usgs_feed(client=unavailable)
+            except httpx.HTTPStatusError as error:
+                assert error.response.status_code == 503
+            else:
+                raise AssertionError("Unsuccessful upstream responses must raise.")
+
+    asyncio.run(verify())
 
 
 def test_demo_ml_category_suggestion_and_validation(tmp_path):
@@ -185,6 +282,30 @@ def test_flood_demo_model_is_reproducible_validated_and_never_claims_real_probab
         assert body["cells"][0]["risk_class"] in {"low", "moderate", "high"}
         assert "Synthetic demonstration—not a validated real-world flood forecast." in body["limitations"]
         assert client.post("/api/flood/demo-simulation", json=payload).json() == body
+        relocated = client.post(
+            "/api/flood/demo-simulation",
+            json={**payload, "startLatitude": 27.1, "startLongitude": 86.9},
+        ).json()
+        assert relocated["start_location"] == {"latitude": 27.1, "longitude": 86.9}
+        assert relocated["cells"][0]["latitude"] == 27.1
+        assert relocated["cells"][0]["longitude"] == 86.9
+        assert relocated["propagation_path"][0] == [27.1, 86.9]
+        assert relocated["propagation_path"][1] == [27.065, 86.945]
+        assert relocated["cells"][0]["risk_score"] == body["cells"][0]["risk_score"]
+        assert client.post(
+            "/api/flood/demo-simulation",
+            json={**payload, "startLatitude": 90},
+        ).status_code == 422
+        edge_scenario = client.post(
+            "/api/flood/demo-simulation",
+            json={**payload, "startLatitude": -89.89, "startLongitude": 179.8},
+        ).json()
+        generated_coordinates = (
+            edge_scenario["propagation_path"]
+            + [[cell["latitude"], cell["longitude"]] for cell in edge_scenario["cells"]]
+            + [point for route in edge_scenario["routes"] for point in route["geometry"]]
+        )
+        assert all(-90 <= latitude <= 90 and -180 <= longitude <= 180 for latitude, longitude in generated_coordinates)
 
         later = client.post(
             "/api/flood/demo-simulation",
@@ -419,3 +540,6 @@ def test_usgs_failure_is_explicit_and_does_not_fabricate_records(tmp_path):
         response = client.get("/api/earthquakes")
         assert response.status_code == 503
         assert "no live observations" in response.json()["detail"]["message"]
+        during_cooldown = client.get("/api/earthquakes")
+        assert during_cooldown.status_code == 503
+        assert "no live observations" in during_cooldown.json()["detail"]["message"]

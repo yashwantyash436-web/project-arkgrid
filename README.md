@@ -17,12 +17,16 @@ ArkGrid is a geospatial disaster-intelligence prototype for observations, citize
 - Independent browser connectivity hints and API health checks (initially, after online/focus events, and every 30 seconds while visible), plus a persistent last successful health-check time. Optional automatic Emergency Mode navigation is limited to the Overview so an active form is not interrupted.
 - User-triggered device location capture with browser-reported accuracy/time, manual coordinate entry, and explicit coordinate provenance carried into synchronized incident records.
 - FastAPI service with SQLite persistence for incident reports, status changes, internal notes, and explicitly fictional resources.
-- Overview metrics use persisted API records, demo-resource availability, the backend USGS freshness response, and this device's local pending queue; API failures appear as unavailable rather than fabricated zeroes.
+- The Overview shows four live indicators (open incidents, high-priority rule scores, USGS observations, and pending local reports); unavailable API data is not shown as a fabricated zero.
 - Idempotent manual synchronization of locally saved emergency reports using their client report ID.
 - The local queue retains sync attempt counts and the server incident ID after acknowledgement; retries remain keyed to the stable client report ID.
-- Recent USGS all-day earthquake observations, fetched and cached by the API, with freshness/error status and map markers.
-- Live monitoring offers a global map extent by default and a separate demo-region view; the all-day feed is not filtered to the United States.
+- Recent USGS all-day earthquake observations, fetched and cached by the API, with freshness/error status and map markers. API refreshes are serialized, reuse an HTTP connection pool, retry a transient upstream failure once, and retain the last successful feed during a retry cooldown.
+- Live monitoring can filter the same global USGS feed to Japan, Nepal, Indonesia, Türkiye, Chile, the western United States, and New Zealand. These named regions are approximate monitoring boxes, including two antimeridian-aware bounds for New Zealand; they are not official hazard boundaries, forecasts, or predictions.
 - A FastAPI-backed deterministic logistic-regression flood simulation with persisted model metadata, timeline cells, and synthetic candidate road paths. Every model input, grid, and route is demo-only, and the displayed score is not a probability.
+- The original ten destinations remain directly available in navigation: Overview, Emergency Mode, Live monitoring, Interactive map, Flood & satellite, Citizen SOS, Incidents, Rescue coordination, Trusted contacts, and Data & system status.
+- Separate, deterministic flood and landslide demonstrations. Flood inputs include a manually selected source point and time horizon; landslide inputs include synthetic rainfall, slope, and soil categories. Their corridors are illustrative rules, not physical or validated forecasts.
+- Fictional settlement/population markers, explicitly ranked potentially lower-risk demonstration locations, and a review/confirmation-only alert activity log. No contacts are dialed and no alert messages are sent.
+- Trusted-contact changes are serialized as atomic IndexedDB settings updates. Existing database records are retained; a report-store read failure does not prevent independently loaded contacts from appearing.
 - Deterministic, explainable rules-based incident priority. A configured coordinator token is required to record score overrides.
 - In Emergency Mode, users can opt in to a demo Naive Bayes text classifier that suggests report categories from a small synthetic training set through `POST /api/ml/category-suggestion`. The user reviews/applies suggestions; its model score is not calibrated and it does not verify reports or determine priority.
 - External-source reachability/status cards. Copernicus Data Space is probed for public catalogue **metadata only**; no imagery is downloaded or analyzed.
@@ -82,6 +86,13 @@ pnpm --dir apps\web run dev
 
 Vite proxies `/api` to `http://127.0.0.1:8000` during local development. For a separately hosted API, copy `apps/web/.env.example` to `apps/web/.env.local` and set `VITE_ARKGRID_API_URL` to its public base URL. Only the API URL belongs in frontend configuration; provider/coordinator credentials must remain server-side. When the API is unavailable, live observations and persisted-coordinator views show an error, while locally saved Emergency Mode reports remain on-device and unsynchronized.
 
+## Demonstration workflows
+
+- **Flood and landslide:** Open **Flood simulation**. Choose either scenario tab, adjust the labelled synthetic inputs, and use the map-source button if you want to move the illustrative starting area. Flood scenarios require the API; when it is offline the panel reports that the model is unavailable rather than substituting invented live results. Toggle layers individually and inspect the map legend, settlement counts, candidate exclusion/ranking reasons, and affected markers. These displays are not evacuation guidance.
+- **Trusted contacts:** Open **Emergency Mode → Trusted contacts**, add a name, relationship, international-format phone number, and optional note. Edit or delete saved entries there; changes remain in the current browser profile's IndexedDB. Refreshing/reopening the application should preserve them. Browser data clearing can still erase local records.
+- **SMS handoff:** Save a local report, open its review, select a trusted contact, and review/edit the message. Location and its map link are omitted unless explicitly enabled. Preparing the SMS asks for confirmation showing the recipient and exact message, then attempts a user-confirmed messaging-app handoff. If no composer opens, use **Copy message instead**. ArkGrid does not send SMS itself and cannot confirm sending or delivery.
+- **Simulated alert:** In a flood or landslide review, inspect the fictional locations, proposed message, and any potentially lower-risk demonstration destination. **Confirm demo alert generation** only appends a local demo activity entry; no notification is sent.
+
 ## Deploy on Render
 
 This repository includes a Render Blueprint at [`render.yaml`](./render.yaml). It provisions:
@@ -115,7 +126,7 @@ ArkGrid shows two separate statuses: browser connectivity events/`navigator.onLi
 
 ## Trusted contacts, location and SMS
 
-Open **Trusted contacts** in the main navigation. Add a name, relationship, phone number in international E.164 format (including country code, for example `+14155550123`), and optional note. Contacts are stored locally in IndexedDB only; there is no user account, server-side contact sync, authentication, or recovery/export feature. They may be lost if browser storage is cleared and are accessible to someone with access to the browser profile. Existing phone-only entries are retained by the storage migration as legacy contacts; edit their name/relationship when convenient.
+Open **Emergency mode → Trusted contacts**. Add a name, relationship, phone number in international E.164 format (including country code, for example `+14155550123`), and optional note. Contacts are stored locally in IndexedDB only; there is no user account, server-side contact sync, authentication, or recovery/export feature. They may be lost if browser storage is cleared and are accessible to someone with access to the browser profile. Existing phone-only entries are retained by the storage migration as legacy contacts; edit their name/relationship when convenient.
 
 You can save a country/region label in local settings for your own reference. It does not select, validate, or recommend an emergency number. Verify official local numbers independently and add an explicitly chosen number as a trusted contact; ArkGrid does not apply a calling code to a phone number or hardcode a universal emergency number.
 
@@ -129,7 +140,7 @@ Standard OpenStreetMap raster tiles are retained to avoid introducing a paid til
 
 ## Flood simulation and route demo
 
-Open **Flood & satellite**. Adjust synthetic rainfall (mm), water level (m), river level (m), terrain baseline (m), water-level trend (m/hour), and the Now/+1/+3/+6 hour timeline. The backend validates bounds and runs a class-weighted logistic-regression model trained by `services/api/scripts/train_flood_demo_model.py`; the model and metrics metadata are in `services/api/app/flood_demo_model.json`. Training labels and the twelve-cell scenario are deterministic synthetic fixtures. The output is an uncalibrated synthetic risk score, not a probability or validated prediction. Cells are not flood polygons, and there are no calculated arrival times.
+Open **Flood simulation**. Adjust synthetic rainfall (mm), water level (m), river level (m), terrain baseline (m), water-level trend (m/hour), and the Now/+1/+3/+6 hour timeline. The backend validates bounds and runs a class-weighted logistic-regression model trained by `services/api/scripts/train_flood_demo_model.py`; the model and metrics metadata are in `services/api/app/flood_demo_model.json`. Training labels and the twelve-cell scenario are deterministic synthetic fixtures. The output is an uncalibrated synthetic risk score, not a probability or validated prediction. Cells are not flood polygons, and there are no calculated arrival times.
 
 The two displayed roads are a deterministic synthetic graph with invented geometry. Route scoring combines its synthetic cell scores with a fixed illustrative distance penalty; route length is synthetic, no drive time is returned, and no candidate is safe or suitable for evacuation. The result changes with the simulated horizon to demonstrate route evaluation. Real-data mode is unavailable because ArkGrid does not connect rainfall observations, river gauges, an elevation raster, validated flood boundaries, or an operational road-routing graph. The simulation currently calls the API and is not available offline; it is not silently substituted with cached live data.
 

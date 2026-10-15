@@ -29,6 +29,61 @@ const report: EmergencyReport = {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('ArkGrid API client', () => {
+  it('validates the live earthquake response and sends an explicit refresh query', async () => {
+    const response = {
+      items: [{
+        id: 'usgs-event-1',
+        magnitude: 4.2,
+        place: 'Japan',
+        time: '2026-10-14T05:00:00.000Z',
+        latitude: 38,
+        longitude: 141,
+        depth_km: 12,
+        url: 'https://earthquake.usgs.gov/earthquakes/eventpage/usgs-event-1',
+      }],
+      total: 1,
+      source_name: 'USGS Earthquake Hazards Program',
+      source_url: 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson',
+      data_class: 'external_observation',
+      fetched_at: '2026-10-14T05:00:00.000Z',
+      stale: false,
+      error: null,
+      cache_age_seconds: 0,
+      disclaimer: 'Recent observations only.',
+    }
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify(response), { status: 200 }))
+    vi.stubGlobal('fetch', fetcher)
+
+    await expect(arkgridApi.earthquakes(-2, true)).resolves.toMatchObject({ total: 1, items: response.items })
+    expect(new URL(String(fetcher.mock.calls[0]?.[0]), 'https://arkgrid.test').searchParams.get('refresh')).toBe('true')
+  })
+
+  it('rejects malformed earthquake coordinates instead of treating them as valid observations', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({
+      items: [{
+        id: 'malformed-event',
+        magnitude: 4,
+        place: 'Japan',
+        time: '2026-10-14T05:00:00.000Z',
+        latitude: 91,
+        longitude: 141,
+        depth_km: 10,
+        url: 'https://earthquake.usgs.gov/earthquakes/eventpage/malformed-event',
+      }],
+      total: 1,
+      source_name: 'USGS',
+      source_url: 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson',
+      data_class: 'external_observation',
+      fetched_at: '2026-10-14T05:00:00.000Z',
+      stale: false,
+      error: null,
+      disclaimer: 'Observations only',
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetcher)
+
+    await expect(arkgridApi.earthquakes()).rejects.toThrow(/invalid response/)
+  })
+
   it('rejects an HTTP 200 response that is not a healthy backend payload', async () => {
     vi.stubGlobal('fetch', vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response('<!doctype html><title>ArkGrid</title>', { status: 200 }))

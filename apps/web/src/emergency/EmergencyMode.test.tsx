@@ -2,12 +2,14 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EmergencyMode } from './EmergencyMode'
+import { emergencyStorage } from './storage'
 import type { EmergencyReport, EmergencySettings } from './types'
 
 const { state } = vi.hoisted(() => ({
   state: {
     reports: [] as EmergencyReport[],
     settings: { id: 'settings', emergencyRegion: '', trustedContacts: [], lastSyncAt: null, recentLocation: null } as EmergencySettings,
+    listReports: vi.fn(async () => [...state.reports]),
     sync: vi.fn(async () => ({ serverId: 'incident-server-1', synchronizedAt: '2026-10-14T00:00:00Z' })),
     suggestCategory: vi.fn(async () => ({ category: 'Rescue' as const, score: 0.84, model: 'demo_multinomial_naive_bayes' })),
   },
@@ -24,7 +26,7 @@ vi.mock('../api/client', () => ({
 
 vi.mock('./storage', () => ({
   emergencyStorage: {
-    listReports: vi.fn(async () => [...state.reports]),
+    listReports: state.listReports,
     getSettings: vi.fn(async () => ({ ...state.settings })),
     saveReport: vi.fn(async (report: EmergencyReport) => {
       state.reports = [report, ...state.reports.filter(item => item.id !== report.id)]
@@ -35,10 +37,15 @@ vi.mock('./storage', () => ({
     saveSettings: vi.fn(async (settings: EmergencySettings) => {
       state.settings = settings
     }),
+    updateSettings: vi.fn(async (update: (settings: EmergencySettings) => EmergencySettings) => {
+      state.settings = update(state.settings)
+      return state.settings
+    }),
   },
 }))
 
 const originalGeolocationDescriptor = Object.getOwnPropertyDescriptor(navigator, 'geolocation')
+const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
 afterEach(() => {
   cleanup()
   if (originalGeolocationDescriptor) {
@@ -46,13 +53,23 @@ afterEach(() => {
   } else {
     Reflect.deleteProperty(navigator, 'geolocation')
   }
+  if (originalClipboardDescriptor) {
+    Object.defineProperty(navigator, 'clipboard', originalClipboardDescriptor)
+  } else {
+    Reflect.deleteProperty(navigator, 'clipboard')
+  }
 })
 
 beforeEach(() => {
   state.reports = []
   state.settings = { id: 'settings', emergencyRegion: '', trustedContacts: [], lastSyncAt: null, recentLocation: null }
+  state.listReports.mockImplementation(async () => [...state.reports])
   state.sync.mockClear()
   state.suggestCategory.mockClear()
+  vi.mocked(emergencyStorage.updateSettings).mockImplementation(async update => {
+    state.settings = update(state.settings)
+    return state.settings
+  })
   vi.stubGlobal('confirm', vi.fn(() => true))
 })
 
@@ -184,19 +201,53 @@ describe('offline emergency mode', () => {
     fireEvent.change(screen.getByLabelText('Relationship'), { target: { value: 'Sibling' } })
     fireEvent.change(screen.getByLabelText('Phone number (international format)'), { target: { value: '4155550123' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add trusted contact' }))
-    expect(await screen.findByRole('status')).toHaveTextContent(/international E\.164 format/)
+    expect(await screen.findByRole('alert')).toHaveTextContent(/valid international phone number/)
 
     fireEvent.change(screen.getByLabelText('Phone number (international format)'), { target: { value: '+14155550123' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add trusted contact' }))
     expect(await screen.findByText(/Contact saved only on this device/)).toBeInTheDocument()
     expect(state.settings.trustedContacts[0]).toMatchObject({ name: 'Alex', relationship: 'Sibling', phone: '+14155550123' })
+    expect(screen.getByText('+14155550123')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add trusted contact' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.getByRole('button', { name: 'Save contact changes' })).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Contact name'), { target: { value: 'Alexandra' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save contact changes' }))
     await waitFor(() => expect(state.settings.trustedContacts[0].name).toBe('Alexandra'))
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(state.settings.trustedContacts).toHaveLength(0))
     expect(screen.getByText(/Bluetooth SOS relay is not implemented/)).toBeInTheDocument()
+  })
+
+  it('keeps saved contacts available when a separate report-store read fails', async () => {
+    state.settings.trustedContacts = [{
+      id: 'saved-contact',
+      name: 'Asha',
+      relationship: 'Sister',
+      phone: '+9779812345678',
+      note: '',
+    }]
+    state.listReports.mockRejectedValueOnce(new Error('report store unavailable'))
+    openEmergencyMode()
+    fireEvent.click(await screen.findByRole('button', { name: /Trusted contacts/ }))
+
+    expect(await screen.findByText('Asha')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(/Existing records have not been deleted/)
+    expect(screen.getByRole('button', { name: 'Add trusted contact' })).toBeEnabled()
+  })
+
+  it('shows a storage error rather than claiming a contact was saved', async () => {
+    vi.mocked(emergencyStorage.updateSettings).mockRejectedValueOnce(new Error('quota exceeded'))
+    openEmergencyMode()
+    fireEvent.click(await screen.findByRole('button', { name: /Trusted contacts/ }))
+    fireEvent.change(screen.getByLabelText('Contact name'), { target: { value: 'Asha' } })
+    fireEvent.change(screen.getByLabelText('Relationship'), { target: { value: 'Sister' } })
+    fireEvent.change(screen.getByLabelText('Phone number (international format)'), { target: { value: '+9779812345678' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add trusted contact' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Could not save this contact/)
+    expect(screen.queryByText(/Contact saved only on this device/)).not.toBeInTheDocument()
+    expect(state.settings.trustedContacts).toHaveLength(0)
   })
 
   it('opens an SMS handoff only with an explicit action and never labels it delivered', async () => {
@@ -216,16 +267,33 @@ describe('offline emergency mode', () => {
     await screen.findByRole('heading', { name: 'Review saved report' })
 
     fireEvent.click(screen.getByRole('checkbox', { name: /Alex/ }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /Include location details, coordinates and map link/ }))
+    const includeLocation = screen.getByRole('checkbox', { name: /Include location details, coordinates and map link/ })
+    expect((screen.getByLabelText('SMS message for Alex') as HTMLTextAreaElement).value).not.toContain('27.70000')
+    fireEvent.click(includeLocation)
     const smsLink = screen.getByRole('link', { name: /Prepare SMS for Alex/ })
     expect(smsLink).toHaveAttribute('href', expect.stringContaining('sms:+14155550123'))
-    expect((screen.getByLabelText('SMS message preview for Alex') as HTMLTextAreaElement).value).toContain('ARKGRID SOS')
-    expect((screen.getByLabelText('SMS message preview for Alex') as HTMLTextAreaElement).value).toContain('https://www.openstreetmap.org')
+    expect((screen.getByLabelText('SMS message for Alex') as HTMLTextAreaElement).value).toContain('ARKGRID SOS')
+    expect((screen.getByLabelText('SMS message for Alex') as HTMLTextAreaElement).value).toContain('27.70000,85.30000')
+    expect((screen.getByLabelText('SMS message for Alex') as HTMLTextAreaElement).value).toContain('https://www.openstreetmap.org')
     expect(screen.getByText(/Saved locally on this device/)).toBeInTheDocument()
     expect(screen.queryByText(/SMS was delivered/i)).not.toBeInTheDocument()
 
-    smsLink.addEventListener('click', event => event.preventDefault())
-    fireEvent.click(smsLink)
+    fireEvent.change(screen.getByLabelText('SMS message for Alex'), { target: { value: 'Please call me & bring water.' } })
+    const editedSmsLink = screen.getByRole('link', { name: /Prepare SMS for Alex/ })
+    expect(editedSmsLink.getAttribute('href')).toContain(encodeURIComponent('Please call me & bring water.'))
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    fireEvent.click(screen.getByRole('button', { name: 'Copy message instead' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('Please call me & bring water.'))
+    expect(await screen.findByRole('status')).toHaveTextContent('Message copied. Paste it into your messaging app')
+
+    editedSmsLink.addEventListener('click', event => event.preventDefault())
+    vi.mocked(window.confirm).mockReturnValueOnce(false)
+    fireEvent.click(editedSmsLink)
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('Please call me & bring water.'))
+    expect(screen.getByText('SMS handoff cancelled. No message was sent.')).toBeInTheDocument()
+
+    fireEvent.click(editedSmsLink)
     await waitFor(() => expect(state.reports[0].transmissionStatus).toBe('handoff_requested'))
     expect(screen.getByText(/whether a composer opened and whether a message was sent are unknown/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'I cancelled / no SMS app opened' }))

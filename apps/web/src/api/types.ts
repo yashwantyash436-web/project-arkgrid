@@ -63,6 +63,7 @@ export type EarthquakeResponse = {
   fetched_at: string | null
   stale: boolean
   error: string | null
+  cache_age_seconds?: number
   disclaimer: string
 }
 
@@ -73,6 +74,8 @@ export type FloodSimulationInput = {
   terrainElevationM: number
   waterLevelTrendMPerHour: number
   horizonHours: 0 | 1 | 3 | 6
+  startLatitude: number
+  startLongitude: number
 }
 
 export type FloodSimulationResponse = {
@@ -86,7 +89,11 @@ export type FloodSimulationResponse = {
     river_level_m: number
     terrain_elevation_m: number
     water_level_trend_m_per_hour: number
+    start_latitude: number
+    start_longitude: number
   }
+  start_location: { latitude: number; longitude: number }
+  propagation_path: [number, number][]
   cells: {
     id: string
     latitude: number

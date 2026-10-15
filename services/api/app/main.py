@@ -142,6 +142,8 @@ class FloodSimulationInput(BaseModel):
     terrain_elevation_m: float = Field(alias="terrainElevationM", ge=0, le=9000, allow_inf_nan=False)
     water_level_trend_m_per_hour: float = Field(alias="waterLevelTrendMPerHour", ge=-5, le=5, allow_inf_nan=False)
     horizon_hours: Literal[0, 1, 3, 6] = Field(alias="horizonHours")
+    start_latitude: float = Field(default=26.75, alias="startLatitude", ge=-89.89, le=89.95, allow_inf_nan=False)
+    start_longitude: float = Field(default=87.2, alias="startLongitude", ge=-179.8, le=179.8, allow_inf_nan=False)
 
 
 class EarthquakeCache:
@@ -150,13 +152,28 @@ class EarthquakeCache:
         self.last_success: str | None = None
         self.last_error: str | None = None
         self.fetched_monotonic: float = 0
+        self.next_retry_monotonic: float = 0
+        self.consecutive_failures: int = 0
 
 
-async def fetch_usgs_feed(url: str = USGS_FEED_URL) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=httpx.Timeout(8.0), follow_redirects=True) as client:
-        response = await client.get(url, headers={"Accept": "application/geo+json"})
-        response.raise_for_status()
+async def fetch_usgs_feed(
+    url: str = USGS_FEED_URL,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    if client is None:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(8.0, connect=3.0),
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        ) as owned_client:
+            return await fetch_usgs_feed(url, client=owned_client)
+    response = await client.get(url, headers={"Accept": "application/geo+json"})
+    response.raise_for_status()
+    try:
         payload = response.json()
+    except ValueError as error:
+        raise ValueError("USGS returned invalid JSON.") from error
     if not isinstance(payload, dict) or payload.get("type") != "FeatureCollection" or not isinstance(payload.get("features"), list):
         raise ValueError("USGS returned an invalid GeoJSON FeatureCollection.")
     return payload
@@ -166,13 +183,20 @@ def normalize_earthquakes(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if payload.get("type") != "FeatureCollection" or not isinstance(payload.get("features"), list):
         raise ValueError("Earthquake response is not a valid GeoJSON FeatureCollection.")
     normalized: list[dict[str, Any]] = []
+    seen_event_ids: set[str] = set()
     for item in payload["features"]:
         try:
             properties = item["properties"]
             coordinates = item["geometry"]["coordinates"]
             event_id = item["id"]
             epoch_ms = properties["time"]
-            if not isinstance(event_id, str) or len(coordinates) < 2 or not isinstance(epoch_ms, (int, float)):
+            if (
+                not isinstance(event_id, str)
+                or not event_id
+                or event_id in seen_event_ids
+                or len(coordinates) < 2
+                or not isinstance(epoch_ms, (int, float))
+            ):
                 continue
             longitude, latitude = float(coordinates[0]), float(coordinates[1])
             if not (math.isfinite(longitude) and math.isfinite(latitude) and
@@ -209,6 +233,7 @@ def normalize_earthquakes(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     else f"https://earthquake.usgs.gov/earthquakes/eventpage/{event_id}"
                 ),
             })
+            seen_event_ids.add(event_id)
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
     return normalized
@@ -419,12 +444,20 @@ def create_app(
     db_path = database_path or default_database_path()
     initialize_database(db_path)
     earthquake_cache = EarthquakeCache()
+    earthquake_refresh_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        yield
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(8.0, connect=3.0),
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        ) as http_client:
+            _app.state.usgs_http_client = http_client
+            yield
 
     app = FastAPI(title="Project ArkGrid API", version="0.1.0", lifespan=lifespan)
+    app.state.usgs_http_client = None
     allowed_origins = os.getenv("ARKGRID_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173").split(",")
     app.add_middleware(
         CORSMiddleware,
@@ -457,6 +490,8 @@ def create_app(
             terrain_elevation_m=payload.terrain_elevation_m,
             water_level_trend_m_per_hour=payload.water_level_trend_m_per_hour,
             horizon_hours=payload.horizon_hours,
+            start_latitude=payload.start_latitude,
+            start_longitude=payload.start_longitude,
         )
         try:
             return run_demo_scenario(inputs)
@@ -670,27 +705,81 @@ def create_app(
 
     @app.get("/api/earthquakes")
     @app.get("/api/hazards/earthquakes")
-    async def earthquakes(min_magnitude: float = Query(default=-2, ge=-2, le=10)) -> dict[str, Any]:
-        now_monotonic = asyncio.get_running_loop().time()
-        if not earthquake_cache.last_success or now_monotonic - earthquake_cache.fetched_monotonic >= 60:
-            try:
-                payload = await earthquake_fetcher()
-                features = normalize_earthquakes(payload)
-                earthquake_cache.features = features
-                earthquake_cache.last_success = utc_now()
-                earthquake_cache.fetched_monotonic = now_monotonic
-                earthquake_cache.last_error = None
-            except (httpx.HTTPError, ValueError, TypeError) as error:
-                earthquake_cache.last_error = str(error)
-                if not earthquake_cache.last_success:
-                    raise HTTPException(
-                        status_code=503,
-                        detail={
-                            "message": "The USGS earthquake feed is unavailable; no live observations are being shown.",
-                            "source_url": USGS_FEED_URL,
-                            "fetched_at": None,
-                        },
-                    ) from error
+    async def earthquakes(
+        min_magnitude: float = Query(default=-2, ge=-2, le=10, allow_inf_nan=False),
+        refresh: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        request_cache_generation = earthquake_cache.fetched_monotonic
+        now_monotonic = loop.time()
+        cache_is_fresh = (
+            earthquake_cache.last_success is not None
+            and now_monotonic - earthquake_cache.fetched_monotonic < 60
+        )
+        refresh_not_already_completed = (
+            refresh and earthquake_cache.fetched_monotonic == request_cache_generation
+        )
+        should_refresh = not cache_is_fresh or refresh_not_already_completed
+        if should_refresh and now_monotonic >= earthquake_cache.next_retry_monotonic:
+            async with earthquake_refresh_lock:
+                now_monotonic = loop.time()
+                cache_is_fresh = (
+                    earthquake_cache.last_success is not None
+                    and now_monotonic - earthquake_cache.fetched_monotonic < 60
+                )
+                refresh_not_already_completed = (
+                    refresh and earthquake_cache.fetched_monotonic == request_cache_generation
+                )
+                should_refresh = not cache_is_fresh or refresh_not_already_completed
+                if should_refresh and now_monotonic >= earthquake_cache.next_retry_monotonic:
+                    try:
+                        async def fetch_payload() -> dict[str, Any]:
+                            if earthquake_fetcher is fetch_usgs_feed:
+                                return await fetch_usgs_feed(client=app.state.usgs_http_client)
+                            return await earthquake_fetcher()
+
+                        for attempt in range(2):
+                            try:
+                                payload = await fetch_payload()
+                                break
+                            except httpx.HTTPError as error:
+                                retryable = not isinstance(error, httpx.HTTPStatusError) or error.response.status_code >= 500
+                                if attempt == 0 and retryable:
+                                    await asyncio.sleep(0.25)
+                                    continue
+                                raise
+                        features = normalize_earthquakes(payload)
+                        earthquake_cache.features = features
+                        earthquake_cache.last_success = utc_now()
+                        earthquake_cache.fetched_monotonic = loop.time()
+                        earthquake_cache.last_error = None
+                        earthquake_cache.next_retry_monotonic = 0
+                        earthquake_cache.consecutive_failures = 0
+                    except (httpx.HTTPError, ValueError, TypeError) as error:
+                        earthquake_cache.last_error = str(error)
+                        earthquake_cache.consecutive_failures += 1
+                        retry_delay = min(30, 5 * (2 ** min(earthquake_cache.consecutive_failures - 1, 3)))
+                        earthquake_cache.next_retry_monotonic = loop.time() + retry_delay
+                        if not earthquake_cache.last_success:
+                            raise HTTPException(
+                                status_code=503,
+                                detail={
+                                    "message": "The USGS earthquake feed is unavailable; no live observations are being shown.",
+                                    "source_url": USGS_FEED_URL,
+                                    "fetched_at": None,
+                                    "error": str(error),
+                                },
+                            ) from error
+        if earthquake_cache.last_success is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "The USGS earthquake feed is unavailable; no live observations are being shown.",
+                    "source_url": USGS_FEED_URL,
+                    "fetched_at": None,
+                    "error": earthquake_cache.last_error,
+                },
+            )
         features = [feature for feature in earthquake_cache.features if feature["magnitude"] is None or feature["magnitude"] >= min_magnitude]
         return {
             "items": features,
@@ -701,6 +790,7 @@ def create_app(
             "fetched_at": earthquake_cache.last_success,
             "stale": earthquake_cache.last_error is not None,
             "error": earthquake_cache.last_error,
+            "cache_age_seconds": max(0, int(loop.time() - earthquake_cache.fetched_monotonic)),
             "disclaimer": "Recent observations only; this feed does not predict earthquakes.",
         }
 

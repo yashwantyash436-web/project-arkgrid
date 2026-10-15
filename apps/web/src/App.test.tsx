@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import type { Incident, ResourceResponse } from './api/types'
@@ -20,6 +20,7 @@ const { api } = vi.hoisted(() => ({
     })),
     incidents: vi.fn(async (): Promise<{ items: Incident[]; total: number }> => ({ items: [], total: 0 })),
     resources: vi.fn(async (): Promise<ResourceResponse> => ({ items: [], total: 0, connected_real_resources: 0, notice: 'fictional demo resources' })),
+    updateIncident: vi.fn(),
     sourceStatuses: vi.fn(async () => ({ items: [], checked_at: '2026-10-14T00:00:00Z' })),
     createIncident: vi.fn(async () => ({ id: 'incident-demo-1' })),
     floodDemoSimulation: vi.fn(async () => ({
@@ -27,7 +28,9 @@ const { api } = vi.hoisted(() => ({
       data_mode: 'DEMO SIMULATION' as const,
       risk_class: 'low' as const,
       horizon_hours: 0 as const,
-      inputs: { rainfall_mm: 80, water_level_m: 0.5, river_level_m: 1, terrain_elevation_m: 6, water_level_trend_m_per_hour: 0.3 },
+      inputs: { rainfall_mm: 80, water_level_m: 0.5, river_level_m: 1, terrain_elevation_m: 6, water_level_trend_m_per_hour: 0.3, start_latitude: 26.75, start_longitude: 87.2 },
+      start_location: { latitude: 26.75, longitude: 87.2 },
+      propagation_path: [[26.75, 87.2], [26.715, 87.245], [26.68, 87.29], [26.645, 87.335]] as [number, number][],
       cells: [{ id: 'cell-0-0', latitude: 26.75, longitude: 87.2, elevation_m: 8, risk_score: 0.2, risk_class: 'low' as const }],
       timeline: [{ hour: 0 as const, high_risk_cells: 0, moderate_or_high_cells: 0 }, { hour: 1 as const, high_risk_cells: 0, moderate_or_high_cells: 2 }, { hour: 3 as const, high_risk_cells: 1, moderate_or_high_cells: 4 }, { hour: 6 as const, high_risk_cells: 2, moderate_or_high_cells: 8 }],
       routes: [
@@ -57,6 +60,15 @@ vi.mock('./api/client', () => ({
 }))
 
 vi.mock('./components/MapView', () => ({
+  emptyHazardLayers: {
+    citizenReports: false,
+    floodRisk: false,
+    floodPath: false,
+    landslideZones: false,
+    affectedPopulation: false,
+    lowerRiskLocations: false,
+    fictionalResources: false,
+  },
   MapView: ({
     center,
     onAreaSelect,
@@ -89,6 +101,7 @@ beforeEach(() => {
   }))
   api.incidents.mockImplementation(async () => ({ items: [], total: 0 }))
   api.resources.mockImplementation(async () => ({ items: [], total: 0, connected_real_resources: 0, notice: 'fictional demo resources' }))
+  api.updateIncident.mockReset()
   api.sourceStatuses.mockImplementation(async () => ({ items: [], checked_at: '2026-10-14T00:00:00Z' }))
   api.createIncident.mockImplementation(async () => ({ id: 'incident-demo-1' }))
   api.floodDemoSimulation.mockClear()
@@ -97,12 +110,29 @@ beforeEach(() => {
 })
 
 describe('ArkGrid frontend', () => {
+  it('explains each page in plain language and marks the current navigation item', () => {
+    render(<App />)
+
+    expect(screen.getByText(/A current summary, important reports, and map/)).toBeInTheDocument()
+    const navigation = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(within(navigation).getAllByRole('button')).toHaveLength(10)
+    expect(within(navigation).getByRole('button', { name: 'Overview' })).toHaveAttribute('aria-current', 'page')
+
+    expect(within(navigation).getByRole('button', { name: 'Live monitoring' })).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: 'Interactive map' })).toBeInTheDocument()
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Emergency Mode' }))
+
+    expect(screen.getByText(/Save a help report on this device and choose how to share it/)).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: 'Emergency Mode' })).toHaveAttribute('aria-current', 'page')
+    expect(within(navigation).getByRole('button', { name: 'Overview' })).not.toHaveAttribute('aria-current')
+  })
+
   it('loads real-feed monitoring through the backend and keeps the empty state honest', async () => {
     render(<App />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Live monitoring' }))
 
-    expect(screen.getByRole('heading', { name: 'Live monitoring' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Live map' })).toBeInTheDocument()
     expect(await screen.findByText(/No USGS observations match the current filters/)).toBeInTheDocument()
     expect(api.earthquakes).toHaveBeenCalledWith(-2)
   })
@@ -115,6 +145,7 @@ describe('ArkGrid frontend', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Live monitoring' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('USGS observations could not be loaded.')
+    expect(screen.getByLabelText(/USGS observations \(unavailable visible\)/)).toBeInTheDocument()
     expect(screen.queryByText(/M4\.2/)).not.toBeInTheDocument()
     api.earthquakes.mockResolvedValue({
       items: [],
@@ -134,7 +165,7 @@ describe('ArkGrid frontend', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Flood & satellite' }))
 
     expect(await screen.findByText(/Selected illustrative route:/)).toBeInTheDocument()
-    expect(screen.getByText(/Synthetic demonstration—not a validated real-world flood forecast/)).toBeInTheDocument()
+    expect(screen.getByText('SIMULATED SCENARIO — NOT A REAL-WORLD FLOOD FORECAST')).toBeInTheDocument()
     expect(screen.getByText(/Real-data mode · not available/)).toBeInTheDocument()
     expect(screen.getByText('Short east-bank demo road', { selector: 'strong' })).toBeInTheDocument()
 
@@ -146,6 +177,8 @@ describe('ArkGrid frontend', () => {
       terrainElevationM: 6,
       waterLevelTrendMPerHour: 0.3,
       horizonHours: 6,
+      startLatitude: 26.75,
+      startLongitude: 87.2,
     }))
   })
 
@@ -198,10 +231,22 @@ describe('ArkGrid frontend', () => {
     }
     api.incidents.mockImplementation(async () => ({ items: [incident], total: 1 }))
     render(<App />)
+    const importantIncidents = screen.getByRole('complementary', { name: 'Important incidents and selected map details' })
+    const importantReport = await within(importantIncidents).findByRole('button', { name: /High · Medical emergency/ })
+    fireEvent.click(importantReport)
+    expect(within(importantIncidents).getByText('Demo patient needs assessment')).toBeInTheDocument()
+
     fireEvent.click(screen.getByRole('button', { name: 'Incidents' }))
 
     expect(await screen.findByText('Demo patient needs assessment')).toBeInTheDocument()
     expect(screen.getByText(/Priority 54\/100/)).toBeInTheDocument()
+    api.updateIncident.mockResolvedValue({ ...incident, status: 'triaged' })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Update incident status' }), {
+      target: { value: 'triaged' },
+    })
+    await waitFor(() => expect(api.updateIncident).toHaveBeenCalledWith('demo-incident-1', { status: 'triaged' }))
+    expect(screen.getByRole('combobox', { name: 'Update incident status' })).toHaveValue('triaged')
+
     fireEvent.change(screen.getByLabelText('Filter by location'), { target: { value: 'Nowhere' } })
     expect(screen.getByText(/No persisted incidents match these filters/)).toBeInTheDocument()
   })
@@ -222,14 +267,15 @@ describe('ArkGrid frontend', () => {
     render(<App />)
     expect(await screen.findByText('API: Unavailable')).toBeInTheDocument()
     expect(screen.getByText('Browser online (hint)')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Open Emergency Mode' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Emergency Mode' })).toHaveLength(2)
   })
 
-  it('selects the custom map scenario and reports a clicked coordinate', () => {
+  it('selects the custom map scenario and reports a clicked coordinate', async () => {
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: 'Interactive map' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Live monitoring' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Area map' }))
 
-    expect(screen.getByText(/Map data © OpenStreetMap contributors/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Map data © OpenStreetMap contributors/i)).toBeInTheDocument()
 
     fireEvent.change(screen.getByRole('combobox', { name: 'Scenario' }), {
       target: { value: 'custom' },
@@ -242,7 +288,8 @@ describe('ArkGrid frontend', () => {
 
   it('requires a location and positive people count before submitting a demo SOS to the API', async () => {
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: 'Citizen SOS' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Incidents' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit demo report' }))
 
     const submit = screen.getByRole('button', { name: 'Submit demo report to backend' })
     expect(submit).toBeDisabled()
@@ -271,24 +318,8 @@ describe('ArkGrid frontend', () => {
     }), expect.any(String))
   })
 
-  it('shows command-centre metrics from fetched data instead of fixed counts', async () => {
+  it('shows a concise situation summary from fetched data instead of fixed counts', async () => {
     api.incidents.mockResolvedValue({ items: [], total: 0 })
-    api.resources.mockResolvedValue({
-      items: [{
-        id: 'SIM-RES-TEST',
-        name: 'Demo resource',
-        capabilities: [],
-        location: 'Demo depot',
-        latitude: null,
-        longitude: null,
-        is_simulated: true,
-        available: true,
-        assigned_incident_id: null,
-      }],
-      total: 1,
-      connected_real_resources: 0,
-      notice: 'Fictional fixtures only',
-    })
     api.earthquakes.mockResolvedValue({
       items: [],
       total: 0,
@@ -302,10 +333,10 @@ describe('ArkGrid frontend', () => {
     })
     render(<App />)
 
-    const activeMetric = await screen.findByText('Active incidents')
+    const activeMetric = await screen.findByText('Open incidents')
     expect(activeMetric.parentElement).toHaveTextContent('0')
-    expect(screen.getByText('New / unreviewed').parentElement).toHaveTextContent('0')
-    expect(screen.getByText('Available demo resources').parentElement).toHaveTextContent('1')
-    expect(screen.getByText('Confirmed responder dispatches').parentElement).toHaveTextContent('Not available')
+    expect(screen.getByText('High-priority incidents').parentElement).toHaveTextContent('0')
+    expect(screen.getByText('Earthquake observations').parentElement).toHaveTextContent('0')
+    expect(screen.getByText('Pending local reports').parentElement).toHaveTextContent('0')
   })
 })

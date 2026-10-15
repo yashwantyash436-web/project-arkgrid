@@ -19,6 +19,8 @@ class FloodInputs:
     terrain_elevation_m: float
     water_level_trend_m_per_hour: float
     horizon_hours: Literal[0, 1, 3, 6]
+    start_latitude: float = 26.75
+    start_longitude: float = 87.20
 
 
 def _features(
@@ -141,6 +143,10 @@ def _risk_score(model: dict[str, Any], inputs: FloodInputs, elevation: float) ->
     return _sigmoid(sum(weight * value for weight, value in zip(model["weights"], features)))
 
 
+def _rounded_coordinate(latitude: float, longitude: float) -> list[float]:
+    return [round(latitude, 6), round(longitude, 6)]
+
+
 def run_demo_scenario(inputs: FloodInputs) -> dict[str, Any]:
     model = load_model()
     terrain_offsets = (
@@ -154,10 +160,14 @@ def run_demo_scenario(inputs: FloodInputs) -> dict[str, Any]:
             elevation = max(0.0, inputs.terrain_elevation_m + offset)
             score = _risk_score(model, inputs, elevation)
             risk_class = "high" if score >= 0.7 else "moderate" if score >= 0.45 else "low"
+            latitude, longitude = _rounded_coordinate(
+                inputs.start_latitude - row * 0.035,
+                inputs.start_longitude + column * 0.045,
+            )
             cells.append({
                 "id": f"cell-{row}-{column}",
-                "latitude": 26.75 - row * 0.035,
-                "longitude": 87.20 + column * 0.045,
+                "latitude": latitude,
+                "longitude": longitude,
                 "elevation_m": elevation,
                 "risk_score": round(score, 4),
                 "risk_class": risk_class,
@@ -172,6 +182,8 @@ def run_demo_scenario(inputs: FloodInputs) -> dict[str, Any]:
             terrain_elevation_m=inputs.terrain_elevation_m,
             water_level_trend_m_per_hour=inputs.water_level_trend_m_per_hour,
             horizon_hours=hour,
+            start_latitude=inputs.start_latitude,
+            start_longitude=inputs.start_longitude,
         )
         scores = [_risk_score(model, future_inputs, cell["elevation_m"]) for cell in cells]
         timeline.append({
@@ -186,14 +198,24 @@ def run_demo_scenario(inputs: FloodInputs) -> dict[str, Any]:
             "id": "short-lowbank",
             "label": "Short east-bank demo road",
             "cell_ids": ["cell-1-1", "cell-1-2", "cell-1-3"],
-            "geometry": [[26.735, 87.19], [26.735, 87.245], [26.735, 87.31], [26.735, 87.37]],
+            "geometry": [
+                _rounded_coordinate(inputs.start_latitude - 0.015, inputs.start_longitude - 0.01),
+                _rounded_coordinate(inputs.start_latitude - 0.015, inputs.start_longitude + 0.045),
+                _rounded_coordinate(inputs.start_latitude - 0.015, inputs.start_longitude + 0.11),
+                _rounded_coordinate(inputs.start_latitude - 0.015, inputs.start_longitude + 0.17),
+            ],
             "distance_km": 4.2,
         },
         {
             "id": "raised-detour",
             "label": "Raised-ground demo detour",
             "cell_ids": ["cell-0-0", "cell-0-1", "cell-0-2", "cell-0-3"],
-            "geometry": [[26.79, 87.19], [26.79, 87.245], [26.79, 87.31], [26.79, 87.37]],
+            "geometry": [
+                _rounded_coordinate(inputs.start_latitude + 0.04, inputs.start_longitude - 0.01),
+                _rounded_coordinate(inputs.start_latitude + 0.04, inputs.start_longitude + 0.045),
+                _rounded_coordinate(inputs.start_latitude + 0.04, inputs.start_longitude + 0.11),
+                _rounded_coordinate(inputs.start_latitude + 0.04, inputs.start_longitude + 0.17),
+            ],
             "distance_km": 5.8,
         },
     ]
@@ -215,14 +237,26 @@ def run_demo_scenario(inputs: FloodInputs) -> dict[str, Any]:
         "data_mode": "DEMO SIMULATION",
         "risk_class": "high" if max(current_scores.values()) >= 0.7 else "moderate" if max(current_scores.values()) >= 0.45 else "low",
         "horizon_hours": inputs.horizon_hours,
+        "start_location": {
+            "latitude": round(inputs.start_latitude, 6),
+            "longitude": round(inputs.start_longitude, 6),
+        },
         "inputs": {
             "rainfall_mm": inputs.rainfall_mm,
             "water_level_m": inputs.water_level_m,
             "river_level_m": inputs.river_level_m,
             "terrain_elevation_m": inputs.terrain_elevation_m,
             "water_level_trend_m_per_hour": inputs.water_level_trend_m_per_hour,
+            "start_latitude": round(inputs.start_latitude, 6),
+            "start_longitude": round(inputs.start_longitude, 6),
         },
         "cells": cells,
+        "propagation_path": [
+            _rounded_coordinate(inputs.start_latitude, inputs.start_longitude),
+            _rounded_coordinate(inputs.start_latitude - 0.035, inputs.start_longitude + 0.045),
+            _rounded_coordinate(inputs.start_latitude - 0.07, inputs.start_longitude + 0.09),
+            _rounded_coordinate(inputs.start_latitude - 0.105, inputs.start_longitude + 0.135),
+        ],
         "timeline": timeline,
         "routes": routes,
         "selected_route_id": routes[0]["id"] if routes else None,
@@ -243,6 +277,7 @@ def run_demo_scenario(inputs: FloodInputs) -> dict[str, Any]:
         "limitations": [
             "Synthetic demonstration—not a validated real-world flood forecast.",
             "Cell elevations and the road graph are invented scenario fixtures, not surveyed terrain or operational roads.",
+            "The illustrated propagation path is a deterministic south-east grid direction, not a hydrological flow calculation.",
             "Route scores are illustrative hazard exposure only; no route is verified or guaranteed safe.",
         ],
     }

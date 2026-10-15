@@ -1,22 +1,65 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Activity, ClipboardList, Database, LayoutDashboard, Map, Menu, Phone, Radio, Satellite, ShieldAlert, Truck, Wifi, WifiOff, X } from 'lucide-react'
-import { MapView } from './components/MapView'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { Activity, ClipboardList, Database, LayoutDashboard, Map, Menu, ShieldAlert, Siren, Users, Waves, Wifi, WifiOff, X } from 'lucide-react'
 import { IncidentCoordinator } from './components/IncidentCoordinator'
-import { LiveMonitoring } from './components/LiveMonitoring'
 import { SourceStatusPanel } from './components/SourceStatusPanel'
 import { DashboardSummary } from './components/DashboardSummary'
-import { FloodSimulation } from './components/FloodSimulation'
 import { arkgridApi, ApiError, apiBaseUrl } from './api/client'
 import { areas } from './data/demoData'
-import { EmergencyMode } from './emergency/EmergencyMode'
+
+const MapView = lazy(() => import('./components/MapView').then(module => ({ default: module.MapView })))
+const LiveMonitoring = lazy(() => import('./components/LiveMonitoring').then(module => ({ default: module.LiveMonitoring })))
+const FloodSimulation = lazy(() => import('./components/FloodSimulation').then(module => ({ default: module.FloodSimulation })))
+const EmergencyMode = lazy(() => import('./emergency/EmergencyMode').then(module => ({ default: module.EmergencyMode })))
 
 type Page = 'Overview' | 'Live monitoring' | 'Interactive map' | 'Flood & satellite' | 'Citizen SOS' | 'Incidents' | 'Rescue coordination' | 'Trusted contacts' | 'Data & system status' | 'Emergency Mode'
 type ConnectionState = 'online' | 'offline' | 'reconnecting'
 type BackendState = 'checking' | 'available' | 'unavailable'
 type InstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> }
-const navigation: [Page, typeof LayoutDashboard][] = [['Overview', LayoutDashboard], ['Emergency Mode', ShieldAlert], ['Live monitoring', Radio], ['Interactive map', Map], ['Flood & satellite', Satellite], ['Citizen SOS', ShieldAlert], ['Incidents', ClipboardList], ['Rescue coordination', Truck], ['Trusted contacts', Phone], ['Data & system status', Database]]
+const navigation: { label: Page; page: Page; Icon: typeof LayoutDashboard }[] = [
+  { label: 'Overview', page: 'Overview', Icon: LayoutDashboard },
+  { label: 'Emergency Mode', page: 'Emergency Mode', Icon: ShieldAlert },
+  { label: 'Live monitoring', page: 'Live monitoring', Icon: Activity },
+  { label: 'Interactive map', page: 'Interactive map', Icon: Map },
+  { label: 'Flood & satellite', page: 'Flood & satellite', Icon: Waves },
+  { label: 'Citizen SOS', page: 'Citizen SOS', Icon: Siren },
+  { label: 'Incidents', page: 'Incidents', Icon: ClipboardList },
+  { label: 'Rescue coordination', page: 'Rescue coordination', Icon: Users },
+  { label: 'Trusted contacts', page: 'Trusted contacts', Icon: Users },
+  { label: 'Data & system status', page: 'Data & system status', Icon: Database },
+]
+const pageTitles: Record<Page, string> = {
+  Overview: 'Overview',
+  'Live monitoring': 'Live map',
+  'Interactive map': 'Area map',
+  'Flood & satellite': 'Flood simulation',
+  'Citizen SOS': 'Citizen SOS',
+  Incidents: 'Incidents',
+  'Rescue coordination': 'Incidents',
+  'Trusted contacts': 'Trusted contacts',
+  'Data & system status': 'System status',
+  'Emergency Mode': 'Emergency Mode',
+}
+const pageGuidance: Record<Page, string> = {
+  Overview: 'A current summary, important reports, and map. ArkGrid is a demonstration and does not contact emergency services.',
+  'Emergency Mode': 'Save a help report on this device and choose how to share it. Saving a report does not call for help.',
+  'Live monitoring': 'See recent earthquake observations from the USGS. These observations do not predict future events.',
+  'Interactive map': 'Choose an area or tap the map to note a location. The example markers are simulated.',
+  'Flood & satellite': 'Explore a made-up flood scenario and check whether outside data sources are available.',
+  'Citizen SOS': 'Enter a demo request. It goes to the demo server, not to emergency responders.',
+  Incidents: 'Review demo reports saved by the server. Check details before acting on any report.',
+  'Rescue coordination': 'Review reports and example resources. Assignments here do not dispatch real responders.',
+  'Trusted contacts': 'Manage contacts saved on this device and review your local emergency settings.',
+  'Data & system status': 'Check the server and outside data sources, and read what this demonstration can and cannot do.',
+}
 function Panel({ title, children, action }: { title: string; children: React.ReactNode; action?: React.ReactNode }) { return <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-sm font-semibold text-slate-900">{title}</h2>{action}</div>{children}</section> }
-function Simulated() { return <span className="inline-flex rounded-full bg-amber-50 px-2 py-1 text-[10px] font-bold tracking-wide text-amber-800 ring-1 ring-amber-200">SIMULATED · DEMO ONLY</span> }
+const pages: Page[] = [
+  'Overview', 'Live monitoring', 'Interactive map', 'Flood & satellite', 'Citizen SOS',
+  'Incidents', 'Rescue coordination', 'Trusted contacts', 'Data & system status', 'Emergency Mode',
+]
+
+function isPage(value: unknown): value is Page {
+  return pages.some(page => page === value)
+}
 
 function Sos() {
   const [submitted, setSubmitted] = useState(false)
@@ -149,12 +192,14 @@ function Content({ page, area, setArea, online, offlineReady, pendingReports, on
  if (page === 'Trusted contacts') return <EmergencyMode online={online} offlineReady={offlineReady} onPendingChange={onPendingChange} initialTab="settings" />
  if (page === 'Interactive map') return mapPanel
  if (page === 'Citizen SOS') return <Sos />
- if (page === 'Incidents') return <IncidentCoordinator heading="Persisted incident queue" />
- if (page === 'Live monitoring') return <LiveMonitoring center={current.center} />
+ if (page === 'Incidents' || page === 'Rescue coordination') return <IncidentCoordinator heading="Incident management" onCreateDemoReport={() => onNavigate('Citizen SOS')} />
+ if (page === 'Live monitoring') return <LiveMonitoring center={current.center} onOpenAreaMap={() => onNavigate('Interactive map')} />
  if (page === 'Flood & satellite') return <div className="space-y-5"><FloodSimulation online={online} /><SourceStatusPanel /></div>
- if (page === 'Rescue coordination') return <IncidentCoordinator heading="Rescue coordination and persisted incidents" />
  if (page === 'Data & system status') return <div className="space-y-5"><BackendStatus /><SourceStatusPanel /><Panel title="Data and safety boundaries"><p className="text-sm text-slate-700">USGS records are labelled external observations. Citizen SOS form entries are explicitly simulated; synchronized Emergency Mode reports are unverified citizen reports. Resources are simulated. The browser-online indicator is only a connectivity hint; offline reports remain locally stored until the user confirms manual upload and the backend acknowledges it. Neither SMS handoff nor this coordinator dispatches real responders.</p></Panel></div>
- return <div className="space-y-5"><DashboardSummary pendingReports={pendingReports} /><div className="grid gap-5 xl:grid-cols-[1.5fr_1fr]"><div className="space-y-5"><Panel title="Operational overview" action={<span className="text-xs text-slate-500">Prototype · no operational dispatch</span>}><p className="text-sm leading-6 text-slate-700">Review recent external observations alongside persisted, unverified incident records. Scores are transparent triage aids, not predictions; resource assignments are fictional and do not dispatch responders.</p></Panel><LiveMonitoring center={current.center} compact /><IncidentCoordinator heading="Recent persisted incidents" /></div><div className="space-y-5"><BackendStatus /><Panel title="Flood-risk demonstration" action={<Simulated />}><p className="text-sm text-slate-700">A synthetic ML and route-scoring workflow is available for review. It is not a validated forecast and does not use live hydrology or real roads.</p><button type="button" className="mt-3 min-h-11 rounded-lg bg-slate-900 px-4 text-sm font-bold text-white" onClick={() => onNavigate('Flood & satellite')}>Open flood scenario</button></Panel><Panel title="Attention required"><p className="text-sm text-slate-600">Review new reports, stale/unavailable data, and queued SOS items. Verify source freshness, location, and incident details independently before any real-world decision.</p>{pendingReports > 0 && <button type="button" className="mt-3 min-h-11 rounded-lg border border-amber-500 bg-amber-50 px-4 text-sm font-bold text-amber-950" onClick={() => onNavigate('Emergency Mode')}>{pendingReports} local SOS report(s) not yet synchronized</button>}</Panel><Panel title="Scenario safeguards"><Simulated /><p className="mt-3 text-sm text-slate-600">Nepal is one historical demonstration area; custom map points are available. The priority score is an explainable rules aid, not a trained AI model and not a sole rescue decision basis.</p></Panel></div></div></div>
+ return <div className="space-y-5">
+   <DashboardSummary pendingReports={pendingReports} />
+   <LiveMonitoring center={current.center} compact onOpenAreaMap={() => onNavigate('Interactive map')} />
+ </div>
 }
 
 export default function App() {
@@ -301,7 +346,7 @@ export default function App() {
     setPage(nextPage)
     setOpen(false)
     const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`
-    window.history.pushState({}, '', nextPage === 'Emergency Mode' ? `${base}emergency` : base)
+    window.history.pushState({ page: nextPage }, '', nextPage === 'Emergency Mode' ? `${base}emergency` : base)
   }
 
   useEffect(() => {
@@ -320,7 +365,12 @@ export default function App() {
   }
 
   useEffect(() => {
-    const restorePage = () => setPage(window.location.pathname.endsWith('/emergency') ? 'Emergency Mode' : 'Overview')
+    const restorePage = (event: PopStateEvent) => {
+      setPage(isPage(event.state?.page)
+        ? event.state.page
+        : window.location.pathname.endsWith('/emergency') ? 'Emergency Mode' : 'Overview')
+      setOpen(false)
+    }
     window.addEventListener('popstate', restorePage)
     return () => window.removeEventListener('popstate', restorePage)
   }, [])
@@ -332,14 +382,14 @@ export default function App() {
       : 'Browser online (hint)'
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-800">
-      <header className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-slate-800 bg-slate-950 px-4 py-2 text-white lg:px-7">
+    <div className="app-shell min-h-screen">
+      <header className="app-header sticky top-0 z-20 flex min-h-16 flex-wrap items-center justify-between gap-3 px-4 py-2 sm:px-6 lg:px-7">
         <div className="flex items-center gap-3">
-          <button className="text-white lg:hidden" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls="primary-navigation" aria-label="Toggle navigation">{open ? <X /> : <Menu />}</button>
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-700 text-white"><Activity size={18} /></div>
-          <div><p className="font-semibold tracking-tight">ArkGrid</p><p className="text-[10px] font-medium uppercase tracking-wider text-slate-300">Disaster intelligence · demo</p></div>
+          <button className="app-menu-button lg:hidden" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls="primary-navigation" aria-label="Toggle navigation">{open ? <X /> : <Menu />}</button>
+          <div className="app-brand-mark flex h-10 w-10 items-center justify-center rounded-xl text-white"><Activity size={21} /></div>
+          <div><p className="font-bold tracking-tight">ArkGrid</p><p className="text-xs font-medium">Community safety · demonstration</p></div>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="app-header-actions flex flex-wrap items-center justify-end gap-2">
           <span role="status" aria-live="polite" className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold ${connection === 'offline' ? 'bg-red-100 text-red-900' : connection === 'reconnecting' ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-900'}`}>
             {connection === 'offline' ? <WifiOff size={14} /> : <Wifi size={14} />}{connectionLabel}
           </span>
@@ -347,13 +397,13 @@ export default function App() {
             API: {backendState === 'available' ? 'Reachable' : backendState === 'unavailable' ? 'Unavailable' : 'Checking'}
           </span>
           {pendingCount > 0 && <button className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-950" onClick={() => navigate('Emergency Mode')}>{pendingCount} saved report{pendingCount === 1 ? '' : 's'}</button>}
-          <button className="min-h-10 rounded-lg bg-red-700 px-3 text-sm font-bold text-white" onClick={() => navigate('Emergency Mode')}>Emergency Mode</button>
-          {installPrompt && !installed && <button className="min-h-10 rounded-lg border border-slate-400 px-3 text-sm font-semibold" onClick={() => void installApp()}>Install app</button>}
-          {installed && <span className="text-xs font-medium text-slate-600">Installed</span>}
-          <span className="hidden items-center gap-2 text-xs text-slate-200 lg:flex"><span className="h-2 w-2 rounded-full bg-amber-400" />Demonstration environment</span>
+          <button className="app-emergency-button min-h-11 rounded-lg px-4 text-sm font-bold text-white" onClick={() => navigate('Emergency Mode')}>Emergency Mode</button>
+          {installPrompt && !installed && <button className="min-h-11 rounded-lg border px-3 text-sm font-semibold" onClick={() => void installApp()}>Install app</button>}
+          {installed && <span className="text-xs font-medium">Installed</span>}
+          <span className="app-demo-label hidden items-center gap-2 text-xs font-semibold lg:flex"><span className="h-2 w-2 rounded-full bg-amber-500" />Demonstration only</span>
         </div>
       </header>
-      <div className="border-b border-slate-200 bg-white px-4 py-2 text-xs text-slate-600 lg:px-7">
+      <div className="app-offline-note px-4 py-2 text-sm sm:px-6 lg:px-7">
         {isProduction
           ? (offlineReady
             ? 'Offline app shell cached on this device. Map tiles, SMS, and server sync may still require external services.'
@@ -365,7 +415,7 @@ export default function App() {
         {' Browser connectivity is a hint; the separate API status comes from a backend health request. Neither status confirms external feeds or SMS delivery.'}
       </div>
       {(connection === 'offline' || backendState === 'unavailable') && (
-        <section role="alert" className="border-b border-red-300 bg-red-50 px-4 py-3 text-sm text-red-950 lg:px-7">
+        <section role="alert" className="app-connection-alert border-b px-4 py-3 text-sm lg:px-7">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="font-semibold">
               {connection === 'offline'
@@ -373,8 +423,6 @@ export default function App() {
                 : `ArkGrid backend health check failed although the browser reports online${lastBackendSuccessAt ? `; last API success ${new Date(lastBackendSuccessAt).toLocaleTimeString()}` : ''}.`}
               {' '}You can prepare SOS reports on this device; they are not delivered until a confirmed sync or separate communication.
             </p>
-            <button type="button" onClick={() => navigate('Emergency Mode')}
-              className="min-h-11 rounded-lg bg-red-800 px-4 font-bold text-white">Open Emergency Mode</button>
           </div>
           <label className="mt-2 inline-flex min-h-9 items-center gap-2">
             <input type="checkbox" checked={automaticEmergency} onChange={event => toggleAutomaticEmergency(event.target.checked)} />
@@ -382,31 +430,26 @@ export default function App() {
           </label>
         </section>
       )}
-      <div className="flex">
-        <aside className={`${open ? 'block' : 'hidden'} fixed inset-x-0 top-16 z-10 max-h-[calc(100dvh-4rem)] overflow-y-auto border-b border-slate-700 bg-slate-950 p-3 lg:static lg:block lg:min-h-[calc(100vh-4rem)] lg:max-h-none lg:w-64 lg:border-b-0 lg:border-r lg:border-slate-800`}>
+      <div className="app-body relative flex">
+        <aside className={`${open ? 'block' : 'hidden'} app-sidebar absolute inset-x-0 top-0 z-10 max-h-[calc(100dvh-4rem)] overflow-y-auto p-3 lg:static lg:block lg:min-h-[calc(100vh-4rem)] lg:max-h-none lg:w-64 lg:shrink-0`}>
           <nav id="primary-navigation" className="space-y-1" aria-label="Main navigation">
-            {navigation.map(([label, Icon]) => (
-              <button key={label} onClick={() => navigate(label)} className={`flex min-h-11 w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300 ${page === label ? 'bg-cyan-700 text-white' : 'text-slate-200 hover:bg-slate-800'}`}>
-                <Icon size={17} />{label}
+            {navigation.map(({ label, page: target, Icon }) => (
+              <button key={label} onClick={() => navigate(target)} aria-current={page === target ? 'page' : undefined} className={`app-nav-button flex min-h-12 w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-base font-semibold ${page === target ? 'is-active' : ''}`}>
+                <Icon size={19} />{label}
               </button>
             ))}
           </nav>
+          <p className="app-sidebar-note mt-5 rounded-xl p-3 text-sm leading-6">This is a demonstration. It does not contact emergency services.</p>
         </aside>
-        <main className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8">
-          <div className="mb-6">
-            <p className="text-xs font-semibold uppercase tracking-[.16em] text-slate-500">ArkGrid command centre</p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-950">{page}</h1>
+        <main className="app-main min-w-0 flex-1 p-4 sm:p-6 lg:p-8">
+          <div className="page-heading mb-6">
+            <h1 className="text-2xl font-bold tracking-tight">{pageTitles[page]}</h1>
+            <p className="page-guidance mt-1 max-w-3xl text-sm leading-6">{pageGuidance[page]}</p>
           </div>
-          {page === 'Overview' && (
-            <section aria-label="Quick actions" className="mb-5 flex flex-wrap gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <button className="min-h-12 rounded-lg bg-red-700 px-5 text-sm font-bold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-800" onClick={() => navigate('Emergency Mode')}>Emergency Mode · local SOS</button>
-              <button className="min-h-12 rounded-lg border border-slate-400 bg-white px-4 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-800" onClick={() => navigate('Citizen SOS')}>Report incident</button>
-              <button className="min-h-12 rounded-lg border border-slate-400 bg-white px-4 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-800" onClick={() => navigate('Live monitoring')}>View live hazard map</button>
-              <button className="min-h-12 rounded-lg border border-slate-400 bg-white px-4 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-800" onClick={() => navigate('Trusted contacts')}>Trusted contacts</button>
-            </section>
-          )}
-          <Content page={page} area={area} setArea={setArea}
-            online={connection === 'online'} offlineReady={offlineReady} pendingReports={pendingCount} onPendingChange={updatePendingCount} onNavigate={navigate} />
+          <Suspense fallback={<p role="status" className="rounded-lg bg-white p-4 text-sm text-slate-700">Loading this section…</p>}>
+            <Content page={page} area={area} setArea={setArea}
+              online={connection === 'online'} offlineReady={offlineReady} pendingReports={pendingCount} onPendingChange={updatePendingCount} onNavigate={navigate} />
+          </Suspense>
         </main>
       </div>
     </div>

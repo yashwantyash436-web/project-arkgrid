@@ -94,12 +94,17 @@ export function EmergencyMode({
   const [contactDraft, setContactDraft] = useState({ id: '', name: '', relationship: '', phone: '', note: '' })
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([])
   const [includeLocationInSms, setIncludeLocationInSms] = useState(false)
+  const [smsDraft, setSmsDraft] = useState<{ key: string; text: string } | null>(null)
   const [validationErrors, setValidationErrors] = useState<string[]>([])
+  const [contactError, setContactError] = useState('')
   const [storageError, setStorageError] = useState('')
+  const [settingsError, setSettingsError] = useState('')
   const [actionMessage, setActionMessage] = useState('')
   const [isSaving, setIsSaving] = useState(false)
+  const [isSavingContact, setIsSavingContact] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [storageLoaded, setStorageLoaded] = useState(false)
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [locationMessage, setLocationMessage] = useState('')
   const [locationClock, setLocationClock] = useState(0)
   const [categorySuggestion, setCategorySuggestion] = useState<{ category: string | null; score: number } | null>(null)
@@ -116,21 +121,28 @@ export function EmergencyMode({
   const smsMessage = selectedReport
     ? smsHandoffProvider.createMessage(selectedReport, includeLocationInSms)
     : ''
+  const smsDraftKey = `${selectedReport?.id ?? ''}:${includeLocationInSms}`
   const selectedContacts = settings.trustedContacts.filter(contact => selectedContactIds.includes(contact.id))
-  const messageForContact = () => smsMessage
+  const messageForContact = () => smsDraft?.key === smsDraftKey ? smsDraft.text : smsMessage
 
   useEffect(() => {
     let mounted = true
-    void Promise.all([emergencyStorage.listReports(), emergencyStorage.getSettings()])
-      .then(([storedReports, storedSettings]) => {
+    void Promise.allSettled([emergencyStorage.listReports(), emergencyStorage.getSettings()])
+      .then(([reportsResult, settingsResult]) => {
         if (!mounted) return
-        setReports(storedReports)
-        setSettings(storedSettings)
-        setEmergencyRegionDraft(storedSettings.emergencyRegion)
+        if (reportsResult.status === 'fulfilled') {
+          setReports(reportsResult.value)
+        } else {
+          setStorageError('Local emergency reports could not be loaded. Existing records have not been deleted.')
+        }
+        if (settingsResult.status === 'fulfilled') {
+          setSettings(settingsResult.value)
+          setEmergencyRegionDraft(settingsResult.value.emergencyRegion)
+          setSettingsLoaded(true)
+        } else {
+          setSettingsError('Trusted contacts and emergency settings could not be loaded from this device.')
+        }
         setStorageLoaded(true)
-      })
-      .catch(() => {
-        if (mounted) setStorageError('Local emergency storage is unavailable. Reports cannot be safely saved on this device.')
       })
     return () => {
       mounted = false
@@ -311,9 +323,8 @@ export function EmergencyMode({
   }
 
   function rememberRecentLocation(recentLocation: NonNullable<EmergencySettings['recentLocation']>) {
-    const nextSettings = { ...settings, recentLocation }
-    void emergencyStorage.saveSettings(nextSettings)
-      .then(() => setSettings(nextSettings))
+    void emergencyStorage.updateSettings(current => ({ ...current, recentLocation }))
+      .then(setSettings)
       .catch(() => setStorageError('Location was added to this report but could not be saved as the recent location.'))
   }
 
@@ -367,37 +378,56 @@ export function EmergencyMode({
 
   async function saveTrustedContact(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    setContactError('')
+    setActionMessage('')
     const phone = normalizePhoneNumber(contactDraft.phone)
     if (!contactDraft.name.trim() || !contactDraft.relationship.trim() || !phone) {
-      setActionMessage('Enter a name, relationship, and phone in international E.164 format, for example +14155550123.')
+      setContactError('Enter a name, relationship, and valid international phone number, for example +14155550123.')
       return
     }
     if (contactDraft.note.trim().length > 240) {
-      setActionMessage('Keep the optional contact note to 240 characters or fewer.')
+      setContactError('Keep the optional contact note to 240 characters or fewer.')
       return
     }
-    if (!contactDraft.id && settings.trustedContacts.length >= 10) {
-      setActionMessage('A maximum of 10 contacts can be stored on this device.')
+    if (!settingsLoaded || settingsError) {
+      setContactError('Contacts are not ready yet. Wait for local settings to load before saving.')
       return
     }
-    const contact: TrustedContact = {
-      id: contactDraft.id || createReportId(),
-      name: contactDraft.name.trim(),
-      relationship: contactDraft.relationship.trim(),
-      phone,
-      note: contactDraft.note.trim(),
-    }
-    const trustedContacts = contactDraft.id
-      ? settings.trustedContacts.map(item => item.id === contact.id ? contact : item)
-      : [...settings.trustedContacts, contact]
-    const nextSettings = { ...settings, trustedContacts }
+    setIsSavingContact(true)
     try {
-      await emergencyStorage.saveSettings(nextSettings)
+      const contact: TrustedContact = {
+        id: contactDraft.id || createReportId(),
+        name: contactDraft.name.trim(),
+        relationship: contactDraft.relationship.trim(),
+        phone,
+        note: contactDraft.note.trim(),
+      }
+      const nextSettings = await emergencyStorage.updateSettings(current => {
+        if (!contactDraft.id && current.trustedContacts.length >= 10) {
+          throw new Error('A maximum of 10 contacts can be stored on this device.')
+        }
+        if (contactDraft.id && !current.trustedContacts.some(item => item.id === contactDraft.id)) {
+          throw new Error('The contact no longer exists on this device. Refresh the page and try again.')
+        }
+        return {
+          ...current,
+          trustedContacts: contactDraft.id
+            ? current.trustedContacts.map(item => item.id === contact.id ? contact : item)
+            : [...current.trustedContacts, contact],
+        }
+      })
       setSettings(nextSettings)
       setContactDraft({ id: '', name: '', relationship: '', phone: '', note: '' })
       setActionMessage('Contact saved only on this device; it is not stored in an account.')
-    } catch {
-      setStorageError('Could not save trusted contacts on this device.')
+    } catch (error) {
+      setContactError(error instanceof Error && [
+        'A maximum of 10 contacts can be stored on this device.',
+        'The contact no longer exists on this device. Refresh the page and try again.',
+      ].includes(error.message)
+        ? error.message
+        : 'Could not save this contact on this device. Your previous saved contacts remain unchanged.')
+    } finally {
+      setIsSavingContact(false)
     }
   }
 
@@ -407,9 +437,11 @@ export function EmergencyMode({
       setActionMessage('Keep the emergency region or country label to 80 characters or fewer.')
       return
     }
-    const nextSettings = { ...settings, emergencyRegion: emergencyRegionDraft.trim() }
     try {
-      await emergencyStorage.saveSettings(nextSettings)
+      const nextSettings = await emergencyStorage.updateSettings(current => ({
+        ...current,
+        emergencyRegion: emergencyRegionDraft.trim(),
+      }))
       setSettings(nextSettings)
       setActionMessage('Region label saved on this device. ArkGrid does not verify or look up emergency numbers.')
     } catch {
@@ -419,9 +451,11 @@ export function EmergencyMode({
 
   async function deleteTrustedContact(contact: TrustedContact) {
     if (!window.confirm(`Delete ${contact.name} from this device?`)) return
-    const nextSettings = { ...settings, trustedContacts: settings.trustedContacts.filter(item => item.id !== contact.id) }
     try {
-      await emergencyStorage.saveSettings(nextSettings)
+      const nextSettings = await emergencyStorage.updateSettings(current => ({
+        ...current,
+        trustedContacts: current.trustedContacts.filter(item => item.id !== contact.id),
+      }))
       setSettings(nextSettings)
       setSelectedContactIds(current => current.filter(id => id !== contact.id))
       if (contactDraft.id === contact.id) setContactDraft({ id: '', name: '', relationship: '', phone: '', note: '' })
@@ -433,9 +467,8 @@ export function EmergencyMode({
 
   async function clearRecentLocation() {
     if (!window.confirm('Delete the saved recent location from this device?')) return
-    const nextSettings = { ...settings, recentLocation: null }
     try {
-      await emergencyStorage.saveSettings(nextSettings)
+      const nextSettings = await emergencyStorage.updateSettings(current => ({ ...current, recentLocation: null }))
       setSettings(nextSettings)
       setActionMessage('Recent location deleted from this device.')
     } catch {
@@ -483,9 +516,11 @@ export function EmergencyMode({
           }
           await emergencyStorage.saveReport(synchronized)
           setReports(current => current.map(item => item.id === report.id ? synchronized : item))
-          const nextSettings = { ...settings, lastSyncAt: result.synchronizedAt }
           try {
-            await emergencyStorage.saveSettings(nextSettings)
+            const nextSettings = await emergencyStorage.updateSettings(current => ({
+              ...current,
+              lastSyncAt: result.synchronizedAt,
+            }))
             setSettings(nextSettings)
           } catch {
             setStorageError('The report synchronized, but its last-sync time could not be recorded locally.')
@@ -533,7 +568,7 @@ export function EmergencyMode({
     const transmissionAttemptedAt = currentTimestamp()
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard access unavailable.')
-      await navigator.clipboard.writeText(smsMessage)
+      await navigator.clipboard.writeText(messageForContact())
       await updateReport({
         ...selectedReport,
         transmissionStatus: 'copied_for_manual_send',
@@ -573,6 +608,7 @@ export function EmergencyMode({
         </div>
       )}
       {storageError && <div role="alert" className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-900">{storageError}</div>}
+      {settingsError && <div role="alert" className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-900">{settingsError}</div>}
       {actionMessage && <div role="status" className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">{actionMessage}</div>}
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -767,7 +803,7 @@ export function EmergencyMode({
             </div>
             <form className="mt-4 grid gap-3 sm:grid-cols-2" onSubmit={event => void saveTrustedContact(event)}>
               <label className={labelClass}>Contact name
-                <input className={inputClass} required maxLength={80} value={contactDraft.name}
+                <input autoComplete="name" className={inputClass} required maxLength={80} value={contactDraft.name}
                   onChange={event => setContactDraft(current => ({ ...current, name: event.target.value }))} />
               </label>
               <label className={labelClass}>Relationship
@@ -776,24 +812,30 @@ export function EmergencyMode({
                   onChange={event => setContactDraft(current => ({ ...current, relationship: event.target.value }))} />
               </label>
               <label className={labelClass}>Phone number (international format)
-                <input className={inputClass} required type="tel" maxLength={24} value={contactDraft.phone}
+                <input autoComplete="tel" inputMode="tel" className={inputClass} required type="tel" maxLength={24} value={contactDraft.phone}
                   placeholder="+14155550123"
-                  onChange={event => setContactDraft(current => ({ ...current, phone: event.target.value }))} />
+                  onChange={event => {
+                    setContactError('')
+                    setContactDraft(current => ({ ...current, phone: event.target.value }))
+                  }} />
               </label>
               <label className={labelClass}>Optional note
                 <input className={inputClass} maxLength={240} value={contactDraft.note}
                   placeholder="Optional message context"
                   onChange={event => setContactDraft(current => ({ ...current, note: event.target.value }))} />
               </label>
+              {contactError && <p role="alert" className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-900 sm:col-span-2">{contactError}</p>}
               <div className="flex flex-wrap gap-2 sm:col-span-2">
-                <button type="submit" className="min-h-12 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white">
-                  {contactDraft.id ? 'Save contact changes' : 'Add trusted contact'}
+                <button type="submit" disabled={!settingsLoaded || Boolean(settingsError) || isSavingContact} className="min-h-12 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400">
+                  {isSavingContact ? 'Saving contact…' : !settingsLoaded ? 'Loading local contacts…' : contactDraft.id ? 'Save contact changes' : 'Add trusted contact'}
                 </button>
                 {contactDraft.id && <button type="button" className="min-h-12 rounded-lg border border-slate-400 px-4 text-sm font-semibold"
                   onClick={() => setContactDraft({ id: '', name: '', relationship: '', phone: '', note: '' })}>Cancel edit</button>}
               </div>
             </form>
-            {settings.trustedContacts.length === 0 ? (
+            {!settingsLoaded ? (
+              <p role="status" className="mt-4 rounded-lg bg-slate-50 p-4 text-sm text-slate-700">Loading contacts saved on this device…</p>
+            ) : settings.trustedContacts.length === 0 ? (
               <p className="mt-4 rounded-lg bg-slate-50 p-4 text-sm text-slate-700">No trusted contacts are stored on this device.</p>
             ) : (
               <ul className="mt-4 divide-y divide-slate-200 rounded-lg border border-slate-200 px-4">
@@ -928,20 +970,22 @@ export function EmergencyMode({
               )}
               {selectedContacts.length === 0 ? (
                 <label className={labelClass}>
-                  SMS message preview (no recipient selected)
-                  <textarea aria-label="SMS message preview" className={`${inputClass} font-mono text-sm`} rows={9} readOnly value={smsMessage} />
+                  SMS message draft (choose a recipient before handoff)
+                  <textarea aria-label="SMS message draft" className={`${inputClass} font-mono text-sm`} rows={9} value={messageForContact()}
+                    onChange={event => setSmsDraft({ key: smsDraftKey, text: event.target.value })} />
                 </label>
               ) : selectedContacts.map(contact => (
                 <label key={`preview-${contact.id}`} className={labelClass}>
-                  Exact SMS preview for {contact.name} · {contact.phone}
-                  <textarea aria-label={`SMS message preview for ${contact.name}`} className={`${inputClass} font-mono text-sm`} rows={9} readOnly value={messageForContact()} />
+                  SMS message for {contact.name} · {contact.phone}
+                  <textarea aria-label={`SMS message for ${contact.name}`} className={`${inputClass} font-mono text-sm`} rows={9} value={messageForContact()}
+                    onChange={event => setSmsDraft({ key: smsDraftKey, text: event.target.value })} />
                 </label>
               ))}
               <label className="flex min-h-12 items-center gap-3 rounded-lg border border-slate-300 p-3 text-sm font-semibold text-slate-800">
                 <input type="checkbox" checked={includeLocationInSms} onChange={event => setIncludeLocationInSms(event.target.checked)} />
                 Include location details, coordinates and map link in the SMS (explicit consent)
               </label>
-              {isLikelyMultipartSms(smsMessage) && (
+              {isLikelyMultipartSms(messageForContact()) && (
                 <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-950">This message exceeds 160 characters and may be split into multiple SMS segments.</p>
               )}
               <div className="flex flex-wrap gap-3">
@@ -956,12 +1000,18 @@ export function EmergencyMode({
                         setActionMessage(`The saved number for ${contact.name} is invalid. Edit this contact using an international +countrycode number before preparing an SMS.`)
                         return
                       }
+                      const reviewedMessage = messageForContact()
+                      if (!window.confirm(`Open your messaging app for ${contact.name} (${recipient}) with this exact message?\n\n${reviewedMessage}\n\nArkGrid cannot send the SMS or confirm delivery.`)) {
+                        event.preventDefault()
+                        setActionMessage('SMS handoff cancelled. No message was sent.')
+                        return
+                      }
                       void updateReport({
                         ...selectedReport,
                         transmissionStatus: 'handoff_requested',
                         transmissionAttemptedAt: currentTimestamp(),
                       })
-                      setActionMessage('SMS handoff requested for the selected recipient. The browser cannot confirm that a composer opened or that a message was sent.')
+                      setActionMessage('Messaging application handoff attempted. Check the messaging app and press Send yourself; ArkGrid cannot confirm that it opened or that a message was sent.')
                     }}
                   >
                     Prepare SMS for {contact.name} ({contact.phone})
@@ -971,7 +1021,7 @@ export function EmergencyMode({
                   Copy message instead
                 </button>
               </div>
-              <p className="text-xs text-slate-600">The SMS URI is a user-initiated handoff, not a send API. Browsers cannot reliably detect whether a composer opened, whether you cancelled, or whether delivery succeeded. On desktop or unsupported devices, copy the preview and use a messaging app yourself. Never retry automatically.</p>
+              <p className="text-xs text-slate-600">The SMS URI is a user-confirmed handoff, not a send API. Browsers cannot reliably detect whether a composer opened, whether you cancelled, or whether delivery succeeded. If no messaging app opens, copy the reviewed message and paste it into your messaging app manually. Never retry automatically.</p>
               {(selectedReport.transmissionStatus === 'handoff_requested' ||
                 selectedReport.transmissionStatus === 'composer_opened' ||
                 selectedReport.transmissionStatus === 'copied_for_manual_send') && (
