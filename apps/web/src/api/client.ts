@@ -58,7 +58,14 @@ function isEarthquakeResponse(value: unknown): value is EarthquakeResponse {
 
 async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 8000): Promise<T> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  const abortRequest = () => controller.abort()
+  if (init.signal?.aborted) controller.abort()
+  else init.signal?.addEventListener('abort', abortRequest, { once: true })
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
   try {
     const response = await fetch(`${apiBaseUrl}${path}`, {
       ...init,
@@ -84,18 +91,21 @@ async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 8000
     return body as T
   } catch (error) {
     if (error instanceof ApiError) throw error
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new ApiError('ArkGrid API request timed out. Your local report remains saved.')
+    if (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError') {
+      throw new ApiError(timedOut
+        ? 'ArkGrid API request timed out. Your local report remains saved.'
+        : 'ArkGrid API request was cancelled.')
     }
     throw new ApiError(error instanceof Error ? error.message : 'ArkGrid API is unavailable.')
   } finally {
     clearTimeout(timeout)
+    init.signal?.removeEventListener('abort', abortRequest)
   }
 }
 
 export const arkgridApi = {
-  async health(): Promise<HealthResponse> {
-    const value = await request<unknown>('/api/health', {}, 4000)
+  async health(signal?: AbortSignal): Promise<HealthResponse> {
+    const value = await request<unknown>('/api/health', signal ? { signal } : {}, 4000)
     if (!isHealthResponse(value)) {
       throw new ApiError('ArkGrid backend health check returned an invalid response.')
     }

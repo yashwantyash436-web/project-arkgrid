@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { arkgridApi, ApiError, apiBaseUrl } from '../api/client'
 import {
@@ -111,6 +111,7 @@ export function EmergencyMode({
   const [categorySuggestionError, setCategorySuggestionError] = useState('')
   const [isSuggestingCategory, setIsSuggestingCategory] = useState(false)
   const categoryRequestId = useRef(0)
+  const automaticSyncAttempts = useRef(new Set<string>())
 
   const selectedReport = reports.find(report => report.id === selectedId) ?? null
   const canSync = true
@@ -493,16 +494,19 @@ export function EmergencyMode({
     setSelectedId(null)
   }
 
-  async function syncPendingReports() {
-    if (!canSync || isSyncing || pendingReports.length === 0) return
-    const confirmed = window.confirm(
-      `Send ${pendingReports.length} locally saved report(s) to the configured ArkGrid demo backend? This shares their report details and location with that server. It does not contact responders.`,
+  const syncPendingReports = useCallback(async (
+    confirmBeforeSync = true,
+    reportsToSync: EmergencyReport[] = pendingReports,
+  ) => {
+    if (!canSync || isSyncing || reportsToSync.length === 0) return
+    const confirmed = !confirmBeforeSync || window.confirm(
+      `Send ${reportsToSync.length} locally saved report(s) to the configured ArkGrid demo backend? This shares their report details and location with that server. It does not contact responders.`,
     )
     if (!confirmed) return
     setIsSyncing(true)
     setActionMessage('')
     try {
-      for (const report of pendingReports) {
+      for (const report of reportsToSync) {
         const attemptedAt = new Date().toISOString()
         try {
           const result = await arkgridApi.syncEmergencyReport(report)
@@ -544,7 +548,25 @@ export function EmergencyMode({
     } finally {
       setIsSyncing(false)
     }
-  }
+  }, [canSync, isSyncing, pendingReports])
+
+  const syncPendingReportsRef = useRef(syncPendingReports)
+  useEffect(() => {
+    syncPendingReportsRef.current = syncPendingReports
+  }, [syncPendingReports])
+
+  useEffect(() => {
+    if (!online) {
+      automaticSyncAttempts.current.clear()
+      return
+    }
+    if (!storageLoaded || isSyncing) return
+    const pending = reports.filter(report => report.syncStatus !== 'synchronized')
+    const retry = pending.filter(report => !automaticSyncAttempts.current.has(report.id))
+    if (retry.length === 0) return
+    for (const report of retry) automaticSyncAttempts.current.add(report.id)
+    void syncPendingReportsRef.current(false, retry)
+  }, [online, reports, storageLoaded, isSyncing])
 
   function markSmsAttempted(report: EmergencyReport) {
     void updateReport({
@@ -612,7 +634,7 @@ export function EmergencyMode({
       {actionMessage && <div role="status" className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">{actionMessage}</div>}
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <StatusCard label="Device connection" value={online ? 'Online (browser hint)' : 'Offline (browser hint)'} />
+        <StatusCard label="Connectivity and backend" value={online ? 'Online' : 'Offline'} />
         <StatusCard label="Saved reports" value={`${reports.length} on this device`} />
         <StatusCard label="Last backend sync" value={formatTime(settings.lastSyncAt)} />
       </div>

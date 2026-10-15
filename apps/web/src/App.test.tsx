@@ -1,8 +1,10 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { IDBFactory } from 'fake-indexeddb'
 import App from './App'
 import type { Incident, ResourceResponse } from './api/types'
+import { emergencyStorage } from './emergency/storage'
 
 const { api } = vi.hoisted(() => ({
   api: {
@@ -23,6 +25,10 @@ const { api } = vi.hoisted(() => ({
     updateIncident: vi.fn(),
     sourceStatuses: vi.fn(async () => ({ items: [], checked_at: '2026-10-14T00:00:00Z' })),
     createIncident: vi.fn(async () => ({ id: 'incident-demo-1' })),
+    syncEmergencyReport: vi.fn(async () => ({
+      serverId: 'incident-server-1',
+      synchronizedAt: '2026-10-14T00:00:00Z',
+    })),
     floodDemoSimulation: vi.fn(async () => ({
       scenario_id: 'koshi-synthetic-demo',
       data_mode: 'DEMO SIMULATION' as const,
@@ -84,9 +90,16 @@ vi.mock('./components/MapView', () => ({
   ),
 }))
 
-afterEach(cleanup)
+const originalGeolocation = Object.getOwnPropertyDescriptor(navigator, 'geolocation')
+afterEach(() => {
+  cleanup()
+  if (originalGeolocation) Object.defineProperty(navigator, 'geolocation', originalGeolocation)
+  else Reflect.deleteProperty(navigator, 'geolocation')
+})
 
 beforeEach(() => {
+  vi.stubGlobal('indexedDB', new IDBFactory())
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
   api.health.mockImplementation(async () => ({ status: 'ok', database: 'sqlite', time: '2026-10-14T00:00:00Z' }))
   api.earthquakes.mockImplementation(async () => ({
     items: [],
@@ -103,7 +116,11 @@ beforeEach(() => {
   api.resources.mockImplementation(async () => ({ items: [], total: 0, connected_real_resources: 0, notice: 'fictional demo resources' }))
   api.updateIncident.mockReset()
   api.sourceStatuses.mockImplementation(async () => ({ items: [], checked_at: '2026-10-14T00:00:00Z' }))
-  api.createIncident.mockImplementation(async () => ({ id: 'incident-demo-1' }))
+  api.syncEmergencyReport.mockClear()
+  api.syncEmergencyReport.mockImplementation(async () => ({
+    serverId: 'incident-server-1',
+    synchronizedAt: '2026-10-14T00:00:00Z',
+  }))
   api.floodDemoSimulation.mockClear()
   window.localStorage.removeItem('arkgrid-auto-emergency')
   window.localStorage.removeItem('arkgrid-last-api-success')
@@ -251,23 +268,65 @@ describe('ArkGrid frontend', () => {
     expect(screen.getByText(/No persisted incidents match these filters/)).toBeInTheDocument()
   })
 
-  it('uses browser network events as device-connection hints', () => {
+  it('shows Online only after backend health succeeds and goes Offline immediately on network loss', async () => {
     render(<App />)
 
-    const connectionStatus = screen.getByText('Browser online (hint)').closest('[role="status"]')
-    expect(connectionStatus).not.toBeNull()
-    expect(connectionStatus).toHaveTextContent('Browser online (hint)')
+    const connectionStatus = screen.getByRole('status', { name: 'Connectivity and backend status' })
+    await waitFor(() => expect(connectionStatus).toHaveTextContent('Online'))
     fireEvent(window, new Event('offline'))
-    expect(connectionStatus).toHaveTextContent('Browser offline (hint)')
-    expect(screen.getByText('API: Unavailable')).toBeInTheDocument()
+    expect(connectionStatus).toHaveTextContent('Offline')
+    expect(screen.queryByText(/Browser online|API: Reachable|hint/i)).not.toBeInTheDocument()
   })
 
-  it('checks API reachability separately from the browser online signal', async () => {
-    api.health.mockImplementation(async () => { throw new Error('API connection refused') })
+  it('stays Offline when the backend health check fails or times out', async () => {
+    api.health.mockImplementation(async () => { throw new Error('request timed out') })
     render(<App />)
-    expect(await screen.findByText('API: Unavailable')).toBeInTheDocument()
-    expect(screen.getByText('Browser online (hint)')).toBeInTheDocument()
+    expect(await screen.findByRole('status', { name: 'Connectivity and backend status' })).toHaveTextContent('Offline')
+    expect(screen.queryByText(/Browser online|API: Reachable|hint/i)).not.toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Emergency Mode' })).toHaveLength(2)
+  })
+
+  it('ignores an older health result after the browser goes offline', async () => {
+    let resolveHealth!: (value: { status: 'ok'; database: 'available'; time: string }) => void
+    api.health.mockImplementation(() => new Promise(resolve => { resolveHealth = resolve }))
+    render(<App />)
+    const connectionStatus = screen.getByRole('status', { name: 'Connectivity and backend status' })
+
+    fireEvent(window, new Event('offline'))
+    expect(connectionStatus).toHaveTextContent('Offline')
+    resolveHealth({ status: 'ok', database: 'available', time: '2026-10-16T00:00:00Z' })
+    await waitFor(() => expect(connectionStatus).toHaveTextContent('Offline'))
+  })
+
+  it('opens the browser installation prompt and confirms only the appinstalled event', async () => {
+    render(<App />)
+    expect(screen.getByText('Installation unavailable in this browser.')).toBeInTheDocument()
+
+    const prompt = vi.fn(async () => undefined)
+    const installEvent = Object.assign(new Event('beforeinstallprompt', { cancelable: true }), {
+      prompt,
+      userChoice: Promise.resolve({ outcome: 'accepted' as const }),
+    })
+    fireEvent(window, installEvent)
+    fireEvent.click(screen.getByRole('button', { name: 'Install App' }))
+    await waitFor(() => expect(prompt).toHaveBeenCalledOnce())
+    expect(screen.getByText('Installation requested; waiting for browser confirmation.')).toBeInTheDocument()
+    expect(screen.queryByText('Installed')).not.toBeInTheDocument()
+
+    fireEvent(window, new Event('appinstalled'))
+    expect(screen.getByText('Installed')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Install App' })).not.toBeInTheDocument()
+  })
+
+  it('shows the iOS Safari Add to Home Screen instructions when native prompting is unavailable', () => {
+    vi.stubGlobal('navigator', {
+      onLine: true,
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+      platform: 'iPhone',
+      maxTouchPoints: 0,
+    })
+    render(<App />)
+    expect(screen.getByText('Install: Share → Add to Home Screen')).toBeInTheDocument()
   })
 
   it('selects the custom map scenario and reports a clicked coordinate', async () => {
@@ -286,12 +345,12 @@ describe('ArkGrid frontend', () => {
     expect(screen.getByText(/Selected point: 27\.7172, 85\.3240/)).toBeInTheDocument()
   })
 
-  it('requires a location and positive people count before submitting a demo SOS to the API', async () => {
+  it('validates SOS fields, stores the report locally first, then syncs using its report ID', async () => {
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: 'Incidents' }))
     fireEvent.click(screen.getByRole('button', { name: 'Submit demo report' }))
 
-    const submit = screen.getByRole('button', { name: 'Submit demo report to backend' })
+    const submit = screen.getByRole('button', { name: 'Submit SOS report' })
     expect(submit).toBeDisabled()
 
     fireEvent.change(screen.getByLabelText('Primary need'), {
@@ -311,11 +370,87 @@ describe('ArkGrid frontend', () => {
     expect(submit).toBeEnabled()
 
     fireEvent.click(submit)
-    expect(await screen.findByText(/was acknowledged and persisted by the ArkGrid backend/)).toBeInTheDocument()
-    expect(api.createIncident).toHaveBeenCalledWith(expect.objectContaining({
-      dataClass: 'simulation',
+    fireEvent.click(submit)
+    expect(await screen.findByText(/SOS saved on this device/)).toBeInTheDocument()
+    await waitFor(() => expect(api.syncEmergencyReport).toHaveBeenCalledOnce())
+    const report = await emergencyStorage.listReports().then(items => items[0])
+    expect(report).toMatchObject({
+      incidentType: 'Medical emergency',
+      severity: 'Moderate',
+      peopleAffected: 1,
       manualLocation: 'Demo location',
-    }), expect.any(String))
+      syncStatus: 'synchronized',
+      serverIncidentId: 'incident-server-1',
+    })
+    expect(api.syncEmergencyReport).toHaveBeenCalledWith(expect.objectContaining({ id: report.id }))
+    expect(screen.getByRole('button', { name: 'Review saved report and SMS options' })).toBeInTheDocument()
+  })
+
+  it('retains a local SOS when backend synchronization fails', async () => {
+    api.syncEmergencyReport.mockRejectedValueOnce(new Error('backend unavailable'))
+    api.earthquakes.mockRejectedValueOnce(new Error('feed unavailable'))
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Citizen SOS' }))
+    fireEvent.change(screen.getByLabelText('Primary need'), { target: { value: 'Evacuation assistance' } })
+    fireEvent.change(screen.getByLabelText('People affected'), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('Location description'), { target: { value: 'Community hall' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit SOS report' }))
+
+    expect(await screen.findByText(/Backend synchronization failed\. The local report remains saved/)).toBeInTheDocument()
+    expect(await emergencyStorage.listReports()).toMatchObject([{
+      incidentType: 'Evacuation needed',
+      category: 'Evacuation',
+      syncStatus: 'failed',
+      syncAttempts: 1,
+    }])
+    expect(await screen.findByText(/Hazard information unavailable — manual emergency report retained/)).toBeInTheDocument()
+  })
+
+  it('saves SOS locally while offline and retains the pending report for Emergency Mode', async () => {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false })
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Citizen SOS' }))
+    fireEvent.change(screen.getByLabelText('Primary need'), { target: { value: 'Food or water' } })
+    fireEvent.change(screen.getByLabelText('People affected'), { target: { value: '2' } })
+    fireEvent.change(screen.getByLabelText('Location description'), { target: { value: 'Near the river bridge' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit SOS report' }))
+
+    expect(await screen.findByText(/SOS saved on this device — not yet delivered/)).toBeInTheDocument()
+    expect((await emergencyStorage.listReports())[0]).toMatchObject({
+      incidentType: 'Other urgent need',
+      category: 'Food or water',
+      peopleAffected: 2,
+      manualLocation: 'Near the river bridge',
+      syncStatus: 'pending',
+    })
+    expect(api.syncEmergencyReport).not.toHaveBeenCalled()
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
+    fireEvent(window, new Event('online'))
+    await waitFor(() => expect(api.syncEmergencyReport).toHaveBeenCalledOnce())
+    await waitFor(async () => expect((await emergencyStorage.listReports())[0].syncStatus).toBe('synchronized'))
+  })
+
+  it('falls back to a manual location when geolocation permission is denied', async () => {
+    Object.defineProperty(navigator, 'geolocation', {
+      configurable: true,
+      value: {
+        getCurrentPosition: (_success: PositionCallback, failure: PositionErrorCallback) =>
+          failure({ code: 1, message: 'denied', PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3 }),
+      },
+    })
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Citizen SOS' }))
+    fireEvent.change(screen.getByLabelText('Primary need'), { target: { value: 'Medical assistance' } })
+    fireEvent.change(screen.getByLabelText('People affected'), { target: { value: '1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use current location (optional)' }))
+    expect(await screen.findByText(/Location permission was denied/)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Location description'), { target: { value: 'Manual address' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit SOS report' }))
+    expect(await screen.findByText(/SOS saved on this device/)).toBeInTheDocument()
+    expect((await emergencyStorage.listReports())[0]).toMatchObject({
+      locationSource: 'manual',
+      manualLocation: 'Manual address',
+    })
   })
 
   it('shows a concise situation summary from fetched data instead of fixed counts', async () => {

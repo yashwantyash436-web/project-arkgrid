@@ -97,6 +97,23 @@ describe('ArkGrid API client', () => {
     await expect(arkgridApi.health()).rejects.toThrow(/invalid response/)
   })
 
+  it('treats a timed-out backend health request as a failed check', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetcher = vi.fn<typeof fetch>((_input, init) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+      }))
+      vi.stubGlobal('fetch', fetcher)
+
+      const healthCheck = arkgridApi.health()
+      const rejection = expect(healthCheck).rejects.toThrow(/timed out/)
+      await vi.advanceTimersByTimeAsync(4000)
+      await rejection
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('syncs location provenance and only returns after backend acknowledgement', async () => {
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({

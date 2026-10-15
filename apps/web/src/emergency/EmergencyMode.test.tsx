@@ -116,6 +116,21 @@ describe('offline emergency mode', () => {
     expect(screen.getByText(/Manual sync first checks backend health/)).toBeInTheDocument()
   })
 
+  it('retries pending synchronization after connectivity returns without creating another report', async () => {
+    const onPendingChange = vi.fn()
+    const view = render(<EmergencyMode online={false} offlineReady onPendingChange={onPendingChange} />)
+    await screen.findByRole('button', { name: /Trusted contacts/ })
+    fireEvent.change(screen.getByLabelText('Manual location description'), { target: { value: 'Near the clinic' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save on this device and review' }))
+    await screen.findByRole('heading', { name: 'Review saved report' })
+    expect(state.reports).toHaveLength(1)
+
+    view.rerender(<EmergencyMode online offlineReady onPendingChange={onPendingChange} />)
+    await waitFor(() => expect(state.reports[0].syncStatus).toBe('synchronized'))
+    expect(state.sync).toHaveBeenCalledOnce()
+    expect(state.reports).toHaveLength(1)
+  })
+
   it('stores the user-entered emergency region without suggesting a local number', async () => {
     openEmergencyMode()
     await screen.findByRole('button', { name: /Trusted contacts/ })
